@@ -1,0 +1,106 @@
+/camera_node:
+  ros__parameters:
+    camera_info_url: package://rm_vision_bringup/config/camera_info.yaml
+    exposure_time: 2500
+    gain: 5.0
+/video_reader_node:
+  ros__parameters:
+    camera_info_url: package://rm_vision_bringup/config/camera_info.yaml
+/serial_driver:
+  ros__parameters:
+    timestamp_offset: -0.0025
+    device_name: /dev/ttyACM0
+    baud_rate: 115200
+    flow_control: none
+    parity: none
+    stop_bits: "1"
+/virtual_serial: #虚拟串口
+  ros__parameters:
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+    vision_mode: 1 # 0-outpost 6-guard 7-base 8-rune
+    color: 0 # 0:红色 1:蓝色
+    has_rune: false
+/armor_detector:
+  ros__parameters:
+    debug: true
+    detect_color: 0 #0:red;1:blue
+
+    binary_thres: 60
+    light.min_ratio: 0.05
+    armor.min_light_ratio: 0.8
+    classifier_threshold: 0.95
+    ignore_classes: ["negative"]
+    
+    ai_model_path: "/model/0526.onnx"  # 相对于包的路径
+    ai_device: "CPU"  # 可选: CPU, GPU, AUTO
+    ai_conf_threshold: 0.65  # 置信度阈值
+    ai_nms_threshold: 0.45   # NMS阈值
+
+/armor_tracker:
+  ros__parameters:
+    target_frame: odom
+    max_armor_distance: 10.0
+    debug: true
+
+    ekf:
+      sigma2_q_xy: 0.5
+      sigma2_q_z: 0.05
+      sigma2_q_yaw: 10.0
+      sigma2_q_r: 10.0
+
+      r_xyz_factor: 4e-4
+      r_yaw: 5e-3
+      r_radius: 0.1
+
+    tracker:
+      max_match_distance: 0.5
+      max_match_yaw_diff: 0.5
+
+      tracking_thres: 5
+      lost_time_thres: 0.3
+
+    score:
+      w_distance: 0.5       # 3D距离评分权重
+      w_twoD_distance: 0.5   # 2D图像中心距离评分权重
+      #成绩计算逻辑score = (w_distance * distance + w_twoD_distance * twoD_distance)*state_score
+      #其中state_score为跟踪状态评分(完全lost=0,跟踪中1)
+
+/ballistic_calculation:
+  ros__parameters:
+    iteration_coeffcient_first: 0.1  
+    iteration_coeffcient_second: 0.05
+    air_resistence: 0.038 #小弹丸0.038 大弹丸 0.019
+    ifFireK: 0.02
+    stop_fire_time: 0.1
+    fire_delay: 0.0
+    bullet_speed: 26.0
+    swich_stategy_1: 5.0
+    swich_stategy_2: 30.0
+    max_v_yaw_gimble: 1.2
+    xyz: [0.03, 0.0, 0.0]
+    rpy: [0.0, 0.038, 0.0]
+/rune_detector:
+  ros__parameters:
+      detect_color: 0
+      debug: true
+      requests_limit: 5 
+      detect_r_tag: true # 是否使用传统方法识别R标
+      min_lightness: 80 # 二值化亮度阈值
+      max_iterations: 99 # 最大迭代次数
+      distance_threshold: 2.0 # 距离阈值(像素)
+      prob_threshold: 0.6 # 置信度阈值
+      
+/rune_solver:
+  ros__parameters:
+    debug: true
+    auto_type_determined: true 
+    predict_time: 0.0
+    compensator_type: resistance
+    gravity: 9.8
+    bullet_speet: 28.0
+    lost_time_thres: 0.5
+    ekf:
+      q: [4e-4, 1e-4, 1e-4, 1e-4]
+      r: [4e-2, 1e-2, 1e-2, 1e-2]

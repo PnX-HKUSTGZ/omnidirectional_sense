@@ -1,0 +1,19 @@
+camera: hik
+
+odom2camera:
+  xyz: "\"0.12 0.06  0.04\""
+  rpy: "\"0.0 -0.0  0.0\""
+
+detector_log_level: INFO
+tracker_log_level: INFO
+serial_log_level: INFO
+
+# 设置启动参数
+# true: 读取视频 false: 读取相机
+video_play: true
+# true: 开启打符 false：关闭打符 非必要保持常开
+rune: true
+# true: 虚拟下位机 false: 实车 
+virtual_serial: true
+# true: 开启录制 false: 关闭录制
+enable_recorder: false
