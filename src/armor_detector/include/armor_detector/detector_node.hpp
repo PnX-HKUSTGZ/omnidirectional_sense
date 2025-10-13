@@ -25,9 +25,6 @@
 #include <vector>
 
 #include "armor_detector/ai_detector.hpp"
-#include "armor_detector/ba_solver.hpp"
-#include "armor_detector/detector.hpp"
-#include "armor_detector/number_classifier.hpp"
 #include "armor_detector/pnp_solver.hpp"
 #include "auto_aim_interfaces/msg/armors.hpp"
 #include "auto_aim_interfaces/srv/set_mode.hpp"
@@ -46,12 +43,6 @@ public:
 
 private:
     // -------------------- 初始化功能 --------------------
-    /**
-     * @brief 初始化装甲板检测器
-     * @return 初始化好的检测器实例
-     */
-    std::unique_ptr<Detector> initDetector();
-
     /**
      * @brief 初始化AI检测器
      * @return 初始化好的AI检测器实例
@@ -139,9 +130,7 @@ private:
         std::shared_ptr<auto_aim_interfaces::srv::SetMode::Response> response);
 
     // -------------------- 核心检测器 --------------------
-    std::unique_ptr<Detector> detector_;
     std::unique_ptr<AIDetector> ai_detector_;
-    bool use_ai_detector_ = false;
 
     // -------------------- 相机相关 --------------------
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_sub_;
@@ -149,7 +138,6 @@ private:
     cv::Point2f cam_center_;
     std::shared_ptr<sensor_msgs::msg::CameraInfo> cam_info_;
     std::unique_ptr<PnPSolver> pnp_solver_;
-    std::unique_ptr<BaSolver> ba_solver_;
 
     // -------------------- 发布器 --------------------
     auto_aim_interfaces::msg::Armors armors_msg_;

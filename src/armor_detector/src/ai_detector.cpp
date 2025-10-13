@@ -78,9 +78,7 @@ std::vector<Armor> AIDetector::detect(const cv::Mat & input, int detect_color)
         armors_.push_back(armor);
     }
 
-    for (auto & armor : armors_) {
-        lcc.correctCorners(armor, gray_img);
-    }
+    // Corner correction removed - lcc was deleted
 
     return armors_;
 }

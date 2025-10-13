@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "armor_detector/light_corner_corrector.hpp"
 #include "armor_detector/types.hpp"
 
 namespace rm_auto_aim
@@ -64,9 +63,6 @@ protected:
 
     // 图像信息
     cv::Mat gray_img;  ///< 灰度图像
-
-    // Light corner corrector
-    LightCornerCorrector lcc;  ///< 用于校正灯条角点的工具
 };
 
 }  // namespace rm_auto_aim

@@ -40,19 +40,11 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
 {
     RCLCPP_INFO(this->get_logger(), "Starting DetectorNode!");
 
-    // 是否使用 AI detector 参数
-    use_ai_detector_ = this->declare_parameter("use_ai_detector", false);
-
     //设置需要探测的颜色
     declare_parameter("detect_color", RED);
 
-    if (use_ai_detector_) {
-        // 初始化 AI 检测器
-        ai_detector_ = initAIDetector();
-    } else {
-        // 初始化Detector参数
-        detector_ = initDetector();
-    }
+    // 只使用 AI 检测器
+    ai_detector_ = initAIDetector();
 
     //提取相机内参
     cam_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -61,7 +53,6 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
             cam_center_ = cv::Point2f(camera_info->k[2], camera_info->k[5]);
             cam_info_ = std::make_shared<sensor_msgs::msg::CameraInfo>(*camera_info);
             pnp_solver_ = std::make_unique<PnPSolver>(camera_info->k, camera_info->d);
-            ba_solver_ = std::make_unique<BaSolver>(camera_info->k, camera_info->d);
             cam_info_sub_.reset();  //取消订阅
         });
 
@@ -101,46 +92,7 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
 }
 
 // ==================== 初始化功能 ====================
-std::unique_ptr<Detector> ArmorDetectorNode::initDetector()
-{
-    rcl_interfaces::msg::ParameterDescriptor param_desc;  //用于描述填充参数
-    //设置二值化参数
-    param_desc.integer_range.resize(1);
-    param_desc.integer_range[0].step = 1;
-    param_desc.integer_range[0].from_value = 0;
-    param_desc.integer_range[0].to_value = 255;
-    int binary_thres = declare_parameter("binary_thres", 80, param_desc);
-    //填充light和armor类所需要的参数
-    LightParams l_params = {
 
-        .min_ratio = declare_parameter("light.min_ratio", 0.1),
-        .max_ratio = declare_parameter("light.max_ratio", 0.4),
-        .max_angle = declare_parameter("light.max_angle", 40.0)};
-
-    ArmorParams a_params = {
-        .min_light_ratio = declare_parameter("armor.min_light_ratio", 0.7),
-        .min_small_center_distance = declare_parameter("armor.min_small_center_distance", 0.8),
-        .max_small_center_distance = declare_parameter("armor.max_small_center_distance", 3.2),
-        .min_large_center_distance = declare_parameter("armor.min_large_center_distance", 3.2),
-        .max_large_center_distance = declare_parameter("armor.max_large_center_distance", 5.5),
-        .max_angle = declare_parameter("armor.max_angle", 35.0)};
-
-    //number classifier 参数
-    auto pkg_path = ament_index_cpp::get_package_share_directory("armor_detector");
-    auto model_path = pkg_path + "/model/mlp.onnx";
-    auto label_path = pkg_path + "/model/label.txt";
-    double threshold = this->declare_parameter("classifier_threshold", 0.7);
-    std::vector<std::string> ignore_classes = this->declare_parameter(
-        "ignore_classes", std::vector<std::string>{"negative"});  ////这里的this并非必须
-
-    //初始化 detector
-    auto detector = std::make_unique<Detector>(
-        binary_thres, l_params, a_params, model_path, label_path, threshold, ignore_classes);
-
-    RCLCPP_INFO(this->get_logger(), "Detector initialized");
-
-    return detector;
-}
 
 std::unique_ptr<AIDetector> ArmorDetectorNode::initAIDetector()
 {
@@ -169,14 +121,9 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
     }
     if (debug_) armors_msg_.image = *img_msg;
 
-    // 检测装甲板
+    // 检测装甲板 - 只使用 AI 检测器
     cv::Mat img;
-    std::vector<Armor> armors;
-    if (use_ai_detector_) {
-        armors = aiDetectArmors(img_msg, img);
-    } else {
-        armors = detectArmors(img_msg, img);
-    }
+    std::vector<Armor> armors = aiDetectArmors(img_msg, img);
 
     // 提取from odom to gimbal的坐标系变换
     if (!updateTransform(img_msg->header.frame_id, "odom", img_msg->header.stamp)) {
@@ -226,15 +173,7 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
     }
     for (auto & armor_num : armor_num_map) {
         if (armor_num.second.first == 2) {
-            //利用同一台车上的两块装甲板关系的先验提高解算正确程度
-            bool success = ba_solver_->fixTwoArmors(
-                armors[armor_num.second.second[0]], armors[armor_num.second.second[1]],
-                r_odom_to_camera, t_odom_to_camera);
-            if (!success) {
-                RCLCPP_ERROR(this->get_logger(), "Fix two armors failed!");
-                armor_num.second.first = -1;
-                continue;
-            }
+            // BaSolver removed - use simple approach
             armors[armor_num.second.second[0]].setCameraArmor(r_odom_to_camera, t_odom_to_camera);
             armors[armor_num.second.second[1]].setCameraArmor(r_odom_to_camera, t_odom_to_camera);
         }
@@ -290,35 +229,6 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
     }
 }
 
-std::vector<Armor> ArmorDetectorNode::detectArmors(
-    const sensor_msgs::msg::Image::ConstSharedPtr & img_msg, cv::Mat & img)
-{
-    // Convert ROS img to cv::Mat
-    img = cv_bridge::toCvShare(img_msg, "rgb8")->image;
-
-    // get color
-    int detect_color = get_parameter("detect_color").as_int();
-
-    auto armors = detector_->detect(img, detect_color);
-
-    // Publish debug info
-    if (debug_) {
-        //计算延迟
-        auto final_time = this->now();
-        auto latency = (final_time - img_msg->header.stamp).seconds() * 1000;
-        RCLCPP_DEBUG_STREAM(this->get_logger(), "Latency: " << latency << "ms");
-
-        binary_img_pub_.publish(
-            cv_bridge::CvImage(img_msg->header, "mono8", detector_->getBinaryImage()).toImageMsg());
-
-        if (!armors.empty()) {
-            number_img_pub_.publish(
-                *cv_bridge::CvImage(img_msg->header, "mono8", detector_->getAllNumbersImage())
-                     .toImageMsg());
-        }
-    }
-    return armors;
-}
 
 std::vector<Armor> ArmorDetectorNode::aiDetectArmors(
     const sensor_msgs::msg::Image::ConstSharedPtr & img_msg, cv::Mat & img)
@@ -416,10 +326,8 @@ void ArmorDetectorNode::chooseBestPose(Armor & armor, const cv::Mat & rvec, cons
         (Eigen::Vector3d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2)) -
          t_odom_to_camera);
     armor.setCameraArmor(r_odom_to_camera, t_odom_to_camera);
-    if (abs(rpy(0)) < 0.26) {
-        ba_solver_->solveBa(armor, r_odom_to_camera, t_odom_to_camera);
-        armor.setCameraArmor(r_odom_to_camera, t_odom_to_camera);
-    } else {
+    // BaSolver removed - skip bundle adjustment
+    if (abs(rpy(0)) >= 0.26) {
         RCLCPP_WARN(this->get_logger(), "The car is on the slope");
     }
 }
@@ -436,11 +344,8 @@ void ArmorDetectorNode::drawResults(
     if (!debug_) {
         return;
     }
-    if (!use_ai_detector_) {
-        detector_->drawResults(img);
-    } else {
-        ai_detector_->drawResults(img);
-    }
+    // 只使用 AI 检测器
+    ai_detector_->drawResults(img);
     // Show yaw, pitch, roll
     for (const auto & armor : armors) {
         Eigen::Vector3d rpy = armor.r_odom_armor.eulerAngles(0, 1, 2);  //提取欧拉角
