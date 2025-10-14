@@ -23,7 +23,6 @@
 #include "rm_serial_driver/crc.hpp"
 #include "rm_serial_driver/packet.hpp"
 #include "rm_serial_driver/rm_serial_driver.hpp"
-
 namespace rm_serial_driver
 {
 RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
@@ -46,21 +45,9 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
     // Detect parameter client
     detector_param_client_ =
         std::make_shared<rclcpp::AsyncParametersClient>(this, "armor_detector");
-    rune_detector_param_client_ =
-        std::make_shared<rclcpp::AsyncParametersClient>(this, "rune_detector");
 
     // Tracker reset service client
     reset_tracker_client_ = this->create_client<std_srvs::srv::Trigger>("/tracker/reset");
-
-    // set mode service client
-    set_rune_detector_mode_client_ =
-        this->create_client<auto_aim_interfaces::srv::SetMode>("/rune_detector/set_mode");
-    set_rune_solver_mode_client_ =
-        this->create_client<auto_aim_interfaces::srv::SetMode>("/rune_solver/set_mode");
-    set_car_detector_mode_client_ =
-        this->create_client<auto_aim_interfaces::srv::SetMode>("/armor_detector/set_mode");
-    set_car_tracker_mode_client_ =
-        this->create_client<auto_aim_interfaces::srv::SetMode>("/armor_tracker/set_mode");
 
     try {
         serial_driver_->init_port(device_name_, *device_config_);
@@ -126,22 +113,14 @@ void RMSerialDriver::receiveData()
                 bool crc_ok = crc16::Verify_CRC16_Check_Sum(
                     reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
                 if (crc_ok) {
-                    if (!initial_set_param_ || !initial_set_rune_param_ ||
-                        packet.detect_color != previous_receive_color_) {
+                    if (!initial_set_param_ || packet.detect_color != previous_receive_color_) {
                         bool detect_color_set = packet.detect_color;
                         setParam(rclcpp::Parameter("detect_color", uint8_t(detect_color_set)));
-                        setRuneParam(rclcpp::Parameter("detect_color", uint8_t(!detect_color_set)));
                         previous_receive_color_ = packet.detect_color;
                     }
 
                     if (packet.reset_tracker) {
                         resetTracker();
-                    }
-
-                    if (packet.set_mode != mode_) {
-                        if (setRuneMode(packet.set_mode) && setCarMode(packet.set_mode)) {
-                            mode_ = packet.set_mode;
-                        }
                     }
 
                     geometry_msgs::msg::TransformStamped t;
@@ -334,31 +313,7 @@ void RMSerialDriver::setParam(const rclcpp::Parameter & param)
     }
 }
 
-void RMSerialDriver::setRuneParam(const rclcpp::Parameter & param)
-{
-    if (!rune_detector_param_client_->service_is_ready()) {
-        RCLCPP_WARN(get_logger(), "Service not ready, skipping parameter set");
-        return;
-    }
 
-    if (!set_rune_param_future_.valid() ||
-        set_rune_param_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        RCLCPP_INFO(get_logger(), "Setting rune_detect_color to %ld...", param.as_int());
-        set_rune_param_future_ = rune_detector_param_client_->set_parameters(
-            {param}, [this, param](const ResultFuturePtr & results) {
-                for (const auto & result : results.get()) {
-                    if (!result.successful) {
-                        RCLCPP_ERROR(
-                            get_logger(), "Failed to set parameter: %s", result.reason.c_str());
-                        return;
-                    }
-                }
-                RCLCPP_INFO(
-                    get_logger(), "Successfully set rune_detect_color to %ld!", param.as_int());
-                initial_set_rune_param_ = true;
-            });
-    }
-}
 
 void RMSerialDriver::resetTracker()
 {
@@ -372,67 +327,9 @@ void RMSerialDriver::resetTracker()
     RCLCPP_INFO(get_logger(), "Reset tracker!");
 }
 
-bool RMSerialDriver::setRuneMode(uint8_t mode)
-{
-    if (!set_rune_solver_mode_client_->service_is_ready() ||
-        !set_rune_detector_mode_client_->service_is_ready()) {
-        RCLCPP_WARN(get_logger(), "Service not ready, skipping set rune mode");
-        return 0;
-    }
 
-    auto request = std::make_shared<auto_aim_interfaces::srv::SetMode::Request>();
-    request->mode = mode;
 
-    auto result_tracker_future = set_rune_solver_mode_client_->async_send_request(request);
-    auto result_detector_future = set_rune_detector_mode_client_->async_send_request(request);
 
-    try {
-        auto result1 = result_tracker_future.get();
-        auto result2 = result_detector_future.get();
-        if (result1->success && result2->success) {
-            RCLCPP_INFO(get_logger(), "Successfully set rune mode to %d", mode);
-            return true;
-        } else {
-            RCLCPP_ERROR(
-                get_logger(), "Failed to set rune mode: %s and %s", result1->message.c_str(),
-                result2->message.c_str());
-        }
-    } catch (const std::exception & ex) {
-        RCLCPP_ERROR(get_logger(), "Service call failed: %s", ex.what());
-    }
-    return false;
-}
-
-bool RMSerialDriver::setCarMode(uint8_t mode)
-{
-    if (!set_car_tracker_mode_client_->service_is_ready() ||
-        !set_car_detector_mode_client_->service_is_ready()) {
-        RCLCPP_WARN(get_logger(), "Service not ready, skipping set car mode");
-        return 0;
-    }
-
-    auto request = std::make_shared<auto_aim_interfaces::srv::SetMode::Request>();
-    request->mode = mode;
-
-    auto result_tracker_future = set_car_tracker_mode_client_->async_send_request(request);
-    auto result_detector_future = set_car_detector_mode_client_->async_send_request(request);
-
-    try {
-        auto result1 = result_tracker_future.get();
-        auto result2 = result_detector_future.get();
-        if (result1->success && result2->success) {
-            RCLCPP_INFO(get_logger(), "Successfully set car mode to %d", mode);
-            return true;
-        } else {
-            RCLCPP_ERROR(
-                get_logger(), "Failed to set car mode: %s and %s", result1->message.c_str(),
-                result2->message.c_str());
-        }
-    } catch (const std::exception & ex) {
-        RCLCPP_ERROR(get_logger(), "Service call failed: %s", ex.what());
-    }
-    return false;
-}
 
 }  // namespace rm_serial_driver
 
