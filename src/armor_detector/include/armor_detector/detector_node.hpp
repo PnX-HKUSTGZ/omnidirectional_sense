@@ -119,16 +119,6 @@ private:
      */
     void publishMarkers();
 
-    // -------------------- 服务回调 --------------------
-    /**
-     * @brief 设置工作模式的回调函数
-     * @param request 服务请求
-     * @param response 服务响应
-     */
-    void setModeCallback(
-        const std::shared_ptr<auto_aim_interfaces::srv::SetMode::Request> request,
-        std::shared_ptr<auto_aim_interfaces::srv::SetMode::Response> response);
-
     // -------------------- 核心检测器 --------------------
     std::unique_ptr<AIDetector> ai_detector_;
 

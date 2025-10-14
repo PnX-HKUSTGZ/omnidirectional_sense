@@ -22,39 +22,9 @@ robot_state_publisher = Node(
 node_params = os.path.join(
     get_package_share_directory('rm_vision_bringup'), 'config', 'node_params.yaml')
 
-tracker_node = Node(
-    package='armor_tracker',
-    executable='armor_tracker_node',
-    output='both',
-    emulate_tty=True,
-    parameters=[node_params],
-    ros_arguments=['--log-level', 'armor_tracker:='+launch_params['tracker_log_level']],
-)
-
-ballistic_node = Node(
-    package='ballistic_calculation',
-    executable='ballistic_calculation_node',
-    output='screen',
-    emulate_tty=True,
-    parameters=[
-        node_params
-    ],
-    
-)
-
 video_reader_node = Node(
     package='video_reader',
     executable='video_reader_node',
-    output='screen',
-    emulate_tty=True,
-    parameters=[
-        node_params
-    ],
-)
-
-rune_solver_node = Node(
-    package='rune_solver',
-    executable='rune_solver_node',
     output='screen',
     emulate_tty=True,
     parameters=[

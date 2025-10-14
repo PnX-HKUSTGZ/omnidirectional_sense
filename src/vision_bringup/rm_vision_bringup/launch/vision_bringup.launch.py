@@ -6,20 +6,11 @@ sys.path.append(os.path.join(get_package_share_directory('rm_vision_bringup'), '
 
 def generate_launch_description():
 
-    from common import node_params, launch_params, robot_state_publisher, tracker_node ,ballistic_node, rune_solver_node, recorder_node
+    from common import node_params, launch_params, robot_state_publisher, recorder_node
     from launch_ros.descriptions import ComposableNode
     from launch_ros.actions import ComposableNodeContainer, Node
     from launch.actions import TimerAction, Shutdown
     from launch import LaunchDescription
-
-    def get_camera_node(package, plugin):
-        return ComposableNode(
-            package=package,
-            plugin=plugin,
-            name='camera_node',
-            parameters=[node_params],
-            extra_arguments=[{'use_intra_process_comms': True}]
-        )
     def get_video_reader_node(package, plugin):
         return ComposableNode(
             package=package,
@@ -49,14 +40,7 @@ def generate_launch_description():
             period=2.0,
             actions=[container],
         )
-    
-    rune_detector_node = ComposableNode(    
-        package='rune_detector',
-        plugin='rm_auto_aim::RuneDetectorNode',
-        name='rune_detector',
-        parameters=[node_params],
-        extra_arguments=[{'use_intra_process_comms': True}]
-        )
+
     armor_detector_node = ComposableNode(
         package='armor_detector',
         plugin='rm_auto_aim::ArmorDetectorNode',
@@ -90,12 +74,11 @@ def generate_launch_description():
     if launch_params['video_play']:
         image_node = get_video_reader_node('video_reader', 'video_reader::VideoReaderNode')
     else:
-        image_node = get_camera_node('hik_camera', 'hik_camera::HikCameraNode')
+        # hik_camera package does not exist, use video_reader as fallback
+        print("hik_camera package does not exist, use video_reader as fallback")
+        image_node = get_video_reader_node('video_reader', 'video_reader::VideoReaderNode')
         
-    if launch_params['rune']:
-        cam_detector = get_camera_detector_container(image_node, armor_detector_node, rune_detector_node)
-    else:
-        cam_detector = get_camera_detector_container(image_node, armor_detector_node)
+    cam_detector = get_camera_detector_container(image_node, armor_detector_node)
 
 
     delay_serial_node = TimerAction(
@@ -103,35 +86,17 @@ def generate_launch_description():
         actions=[serial_driver_node],
     )
 
-    delay_tracker_node = TimerAction(
-        period=2.0,
-        actions=[tracker_node],
-    )
-
-    delay_ballistic_node = TimerAction(
-        period=2.5,
-        actions=[ballistic_node],
-    )
-
     delay_recorder_node = TimerAction(
         period=2.4,
         actions=[recorder_node],
     )
 
-    delay_rune_solver_node = TimerAction(
-        period=2.0,
-        actions=[rune_solver_node],
-    )
 
     launch_description_list = [
         robot_state_publisher,
         cam_detector,
         delay_serial_node,
-        delay_tracker_node,
-        delay_ballistic_node,
     ]
-    if launch_params['rune']:
-        launch_description_list.append(delay_rune_solver_node)
     if launch_params['enable_recorder']:
         launch_description_list.append(delay_recorder_node)
 

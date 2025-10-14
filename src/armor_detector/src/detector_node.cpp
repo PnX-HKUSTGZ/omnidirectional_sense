@@ -56,12 +56,6 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
             cam_info_sub_.reset();  //取消订阅
         });
 
-    // 设置自瞄模式
-    set_mode_srv_ = this->create_service<auto_aim_interfaces::srv::SetMode>(
-        "armor_detector/set_mode", std::bind(
-                                       &ArmorDetectorNode::setModeCallback, this,
-                                       std::placeholders::_1, std::placeholders::_2));
-
     //收到图像信息后回调imageCallback函数
     img_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
         "/image_raw", rclcpp::SensorDataQoS(),
@@ -403,34 +397,6 @@ void ArmorDetectorNode::publishMarkers()
     armor_marker_.action = armors_msg_.armors.empty() ? Marker::DELETE : Marker::ADD;
     marker_array_.markers.emplace_back(armor_marker_);
     marker_pub_->publish(marker_array_);
-}
-
-// ==================== 服务回调 ====================
-void ArmorDetectorNode::setModeCallback(
-    const std::shared_ptr<auto_aim_interfaces::srv::SetMode::Request> request,
-    std::shared_ptr<auto_aim_interfaces::srv::SetMode::Response> response)
-{
-    response->success = true;
-
-    VisionMode mode = static_cast<VisionMode>(request->mode);
-    std::string mode_name = visionModeToString(mode);
-    if (mode_name == "UNKNOWN") {
-        RCLCPP_ERROR(this->get_logger(), "Invalid mode: %d", request->mode);
-        return;
-    }
-
-    switch (mode) {
-        case VisionMode::RUNE: {
-            enable_ = false;
-            break;
-        }
-        default: {
-            enable_ = true;
-            break;
-        }
-    }
-
-    RCLCPP_INFO(this->get_logger(), "Set Car Mode: %s", visionModeToString(mode).c_str());
 }
 
 }  // namespace rm_auto_aim
