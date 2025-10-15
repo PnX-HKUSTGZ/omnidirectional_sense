@@ -17,6 +17,38 @@ AIDetector::AIDetector(
     // 设置输入形状
     input_shape = {1, static_cast<size_t>(IMAGE_HEIGHT), static_cast<size_t>(IMAGE_WIDTH), 3};
 
+    // 检查可用设备
+    auto available_devices = core.get_available_devices();
+    std::cout << "Available OpenVINO devices: ";
+    for (const auto& dev : available_devices) {
+        std::cout << dev << " ";
+    }
+    std::cout << std::endl;
+
+    // 设备选择逻辑
+    std::string selected_device = device;
+    if (device == "AUTO" || device == "GPU") {
+        bool gpu_available = false;
+        for (const auto& dev : available_devices) {
+            if (dev.find("GPU") != std::string::npos) {
+                gpu_available = true;
+                if (device == "GPU") {
+                    selected_device = dev;
+                }
+                break;
+            }
+        }
+        
+        if (device == "AUTO") {
+            selected_device = gpu_available ? "GPU" : "CPU";
+        } else if (device == "GPU" && !gpu_available) {
+            std::cout << "Warning: GPU requested but not available, falling back to CPU" << std::endl;
+            selected_device = "CPU";
+        }
+    }
+    
+    std::cout << "Using device: " << selected_device << std::endl;
+
     // 读取模型
     model = core.read_model(model_path);
 
@@ -47,7 +79,7 @@ AIDetector::AIDetector(
     model = ppp->build();
 
     // 编译模型
-    compiled_model = core.compile_model(model, device);
+    compiled_model = core.compile_model(model, selected_device);
 }
 
 AIDetector::~AIDetector() = default;

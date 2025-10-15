@@ -32,6 +32,20 @@ find_package(ament_cmake_auto REQUIRED)
 ament_auto_find_build_dependencies()
 find_package(OpenCV REQUIRED)
 
+# 查找 CUDA (可选)
+find_package(CUDA QUIET)
+if(CUDA_FOUND)
+    message(STATUS "CUDA found: ${CUDA_VERSION}")
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 14)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    # 添加 CUDA 编译选项
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O2")
+    add_definitions(-DWITH_CUDA)
+else()
+    message(STATUS "CUDA not found, building without CUDA support")
+endif()
+
 # 手动设置 OpenVINO 库路径
 set(OPENVINO_INCLUDE_DIRS "${ABS_PREFIX_PREFIX}/include")
 set(OPENVINO_LIBRARY_DIRS "${ABS_PREFIX_PREFIX}/lib")
@@ -55,14 +69,26 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   ${OPENVINO_INCLUDE_DIRS}
 )
 
+# 如果找到 CUDA，添加 CUDA 包含目录
+if(CUDA_FOUND)
+    target_include_directories(${PROJECT_NAME} PUBLIC ${CUDA_INCLUDE_DIRS})
+endif()
+
 target_link_directories(${PROJECT_NAME} PUBLIC 
   ${OPENVINO_LIBRARY_DIRS}
 )
 
-target_link_libraries(${PROJECT_NAME}
-  ${OpenCV_LIBS}
-  ${OPENVINO_LIBRARIES}
-)
+# 链接库
+set(LINK_LIBS ${OpenCV_LIBS} ${OPENVINO_LIBRARIES})
+
+# 如果找到 CUDA，添加 CUDA 库
+if(CUDA_FOUND)
+    list(APPEND LINK_LIBS ${CUDA_LIBRARIES})
+    # 设置 CUDA 架构 (可根据需要调整)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY CUDA_ARCHITECTURES 75 80 86)
+endif()
+
+target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})
 
 rclcpp_components_register_node(${PROJECT_NAME}
   PLUGIN rm_auto_aim::ArmorDetectorNode

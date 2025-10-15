@@ -29,6 +29,6 @@
     ignore_classes: ["negative"]
     
     ai_model_path: "/model/0526.onnx"  # 相对于包的路径
-    ai_device: "CPU"  # 可选: CPU, GPU, AUTO
+    ai_device: "CPU"  # 可选: CPU, GPU, AUTO (GPU需要CUDA支持)
     ai_conf_threshold: 0.65  # 置信度阈值
     ai_nms_threshold: 0.45   # NMS阈值
