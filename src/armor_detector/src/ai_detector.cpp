@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <opencv2/cudaarithm.hpp>
 
 namespace rm_auto_aim
 {
@@ -17,69 +18,26 @@ AIDetector::AIDetector(
     // 设置输入形状
     input_shape = {1, static_cast<size_t>(IMAGE_HEIGHT), static_cast<size_t>(IMAGE_WIDTH), 3};
 
-    // 检查可用设备
-    auto available_devices = core.get_available_devices();
-    std::cout << "Available OpenVINO devices: ";
-    for (const auto& dev : available_devices) {
-        std::cout << dev << " ";
-    }
-    std::cout << std::endl;
-
-    // 设备选择逻辑
-    std::string selected_device = device;
-    if (device == "AUTO" || device == "GPU") {
-        bool gpu_available = false;
-        for (const auto& dev : available_devices) {
-            if (dev.find("GPU") != std::string::npos) {
-                gpu_available = true;
-                if (device == "GPU") {
-                    selected_device = dev;
-                }
-                break;
-            }
-        }
-        
-        if (device == "AUTO") {
-            selected_device = gpu_available ? "GPU" : "CPU";
-        } else if (device == "GPU" && !gpu_available) {
-            std::cout << "Warning: GPU requested but not available, falling back to CPU" << std::endl;
-            selected_device = "CPU";
-        }
+    // 检查 CUDA 是否可用
+    int cuda_device_count = cv::cuda::getCudaEnabledDeviceCount();
+    if (cuda_device_count == 0) {
+        throw std::runtime_error("No CUDA-enabled devices found!");
     }
     
-    std::cout << "Using device: " << selected_device << std::endl;
-
-    // 读取模型
-    model = core.read_model(model_path);
-
-    // 初始化预处理器
-    ppp = std::make_unique<ov::preprocess::PrePostProcessor>(model);
-
-    // 指定输入图像格式
-    ppp->input()
-        .tensor()
-        .set_element_type(ov::element::u8)
-        .set_layout("NHWC")
-        .set_color_format(ov::preprocess::ColorFormat::BGR);
-
-    // 指定预处理管道
-    ppp->input()
-        .preprocess()
-        .convert_element_type(ov::element::f32)
-        .convert_color(ov::preprocess::ColorFormat::RGB)
-        .scale({255.0f, 255.0f, 255.0f});
-
-    // 指定模型输入布局
-    ppp->input().model().set_layout("NCHW");
-
-    // 指定输出结果格式
-    ppp->output().tensor().set_element_type(ov::element::f32);
-
-    // 构建模型
-    model = ppp->build();
-
-    // 编译模型
-    compiled_model = core.compile_model(model, selected_device);
+    std::cout << "Found " << cuda_device_count << " CUDA device(s)" << std::endl;
+    
+    // 获取 CUDA 设备信息
+    cv::cuda::printShortCudaDeviceInfo(cv::cuda::getDevice());
+    
+    // 加载 ONNX 模型
+    std::cout << "Loading model from: " << model_path << std::endl;
+    net_ = cv::dnn::readNetFromONNX(model_path);
+    
+    // 设置 CUDA 后端
+    net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+    net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+    
+    std::cout << "AI Detector initialized with CUDA backend" << std::endl;
 }
 
 AIDetector::~AIDetector() = default;
@@ -126,24 +84,20 @@ void AIDetector::infer(const cv::Mat & img, int detect_color)
     cv::Mat resized_img;
     cv::resize(img, resized_img, cv::Size(IMAGE_WIDTH, IMAGE_HEIGHT));
 
-    // 创建输入张量
-    uchar * input_data = (uchar *)resized_img.data;
-    ov::Tensor input_tensor = ov::Tensor(
-        compiled_model.input().get_element_type(), compiled_model.input().get_shape(), input_data);
+    // 创建 blob (NCHW 格式，归一化到 [0, 1])
+    cv::Mat blob = cv::dnn::blobFromImage(
+        resized_img, 1.0 / 255.0, cv::Size(IMAGE_WIDTH, IMAGE_HEIGHT), 
+        cv::Scalar(), true, false);
 
-    // 创建推理请求
-    ov::InferRequest infer_request = compiled_model.create_infer_request();
-    infer_request.set_input_tensor(input_tensor);
+    // 设置输入
+    net_.setInput(blob);
 
     // 执行推理
-    infer_request.infer();
+    std::vector<cv::Mat> outputs;
+    net_.forward(outputs);
 
-    // 获取输出张量
-    auto output = infer_request.get_output_tensor(0);
-    ov::Shape output_shape = output.get_shape();
-
-    // 创建输出矩阵 (25200 x 22)
-    cv::Mat output_buffer(output_shape[1], output_shape[2], CV_32F, output.data());
+    // 假设输出是 [1, 25200, 22] 的格式
+    cv::Mat output_buffer = outputs[0].reshape(1, outputs[0].size[1]);
 
     std::vector<cv::Rect> boxes;
     std::vector<int> class_ids;

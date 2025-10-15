@@ -9,8 +9,8 @@
 #include <opencv2/dnn.hpp>
 #include <opencv2/opencv.hpp>
 
-// OpenVINO
-#include <openvino/openvino.hpp>
+// CUDA
+#include <cuda_runtime.h>
 
 // STD
 #include <cmath>
@@ -26,7 +26,7 @@ namespace rm_auto_aim
 {
 
 /**
- * @brief 基于 OpenVINO 的装甲板 AI 检测器
+ * @brief 基于 CUDA/cuDNN 的装甲板 AI 检测器
  * 
  * 使用深度学习模型进行装甲板检测和数字识别
  */
@@ -37,12 +37,12 @@ public:
      * @brief 构造 AI 检测器
      * 
      * @param model_path ONNX 模型文件路径
-     * @param device 推理设备 ("CPU", "GPU", etc.)
+     * @param device 推理设备 (仅支持 "GPU")
      * @param conf_threshold 置信度阈值
      * @param nms_threshold NMS 阈值
      */
     AIDetector(
-        const std::string & model_path, const std::string & device = "CPU",
+        const std::string & model_path, const std::string & device = "GPU",
         float conf_threshold = 0.65f, float nms_threshold = 0.45f);
 
     /**
@@ -98,11 +98,8 @@ private:
      */
     Armor objectToArmor(const Object & obj);
 
-    // OpenVINO 相关
-    ov::Core core;                                          ///< OpenVINO 核心
-    std::shared_ptr<ov::Model> model;                       ///< 模型
-    ov::CompiledModel compiled_model;                       ///< 编译后的模型
-    std::unique_ptr<ov::preprocess::PrePostProcessor> ppp;  ///< 预处理器
+    // CUDA/OpenCV DNN 相关
+    cv::dnn::Net net_;  ///< OpenCV DNN 网络 (支持 CUDA 后端)
 
     // 参数
     float conf_threshold_;            ///< 置信度阈值
