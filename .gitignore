@@ -4,8 +4,6 @@ build/
 log/
 *.o
 *.obj
-*.so
-*.a
 *.out
 *.exe
 *.dll
