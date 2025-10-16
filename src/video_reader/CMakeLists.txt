@@ -19,6 +19,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 ## Find dependencies ##
 #######################
 
+# Ensure docs directory exists to avoid install-time errors
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs")
+endif()
+
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(camera_info_manager REQUIRED)

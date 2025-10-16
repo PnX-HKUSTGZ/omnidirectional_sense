@@ -30,6 +30,7 @@ set(OpenGL_GL_PREFERENCE GLVND)
 #######################
 find_package(ament_cmake_auto REQUIRED)
 ament_auto_find_build_dependencies()
+set(OpenCV_DIR "/usr/local/include/opencv4")
 find_package(OpenCV REQUIRED)
 
 # 查找 CUDA (必需)
@@ -89,12 +90,6 @@ if(BUILD_TESTING)
   )
   ament_lint_auto_find_test_dependencies()
 
-  # Tests disabled due to missing dependencies
-  # find_package(ament_cmake_gtest)
-  # ament_add_gtest(test_node_startup test/test_node_startup.cpp)
-  # target_link_libraries(test_node_startup ${PROJECT_NAME})
-  # ament_add_gtest(test_number_cls test/test_number_cls.cpp)
-  # target_link_libraries(test_number_cls ${PROJECT_NAME})
 
 endif()
 
