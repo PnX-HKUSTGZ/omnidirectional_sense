@@ -33,7 +33,9 @@ ament_auto_find_build_dependencies()
 ## Build ##
 ###########
 
-ament_auto_add_library(${PROJECT_NAME} SHARED src/video_reader_node.cpp)
+ament_auto_add_library(${PROJECT_NAME} SHARED
+    src/video_reader_node.cpp
+)
 
 target_include_directories(${PROJECT_NAME} PUBLIC
     ${OpenCV_INCLUDE_DIRS}

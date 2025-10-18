@@ -112,6 +112,9 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 
 target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})
 
+# 依赖 video_reader 的头文件（提供 GpuImage/TypeAdapter）
+ament_target_dependencies(${PROJECT_NAME} video_reader)
+
 rclcpp_components_register_node(${PROJECT_NAME}
   PLUGIN rm_auto_aim::ArmorDetectorNode
   EXECUTABLE armor_detector_node

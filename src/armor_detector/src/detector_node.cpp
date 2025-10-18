@@ -56,9 +56,9 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
             cam_info_sub_.reset();  //取消订阅
         });
 
-    //收到图像信息后回调imageCallback函数
-    img_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        "/image_raw", rclcpp::SensorDataQoS(),
+    // 订阅 GPU 图像，使用同进程零拷贝
+    img_sub_ = this->create_subscription<video_reader::GpuImage>(
+        "/image_gpu", rclcpp::SensorDataQoS(),
         std::bind(&ArmorDetectorNode::imageCallback, this, std::placeholders::_1));
 
     // 初始化Armors Publisher
@@ -107,17 +107,31 @@ std::unique_ptr<AIDetector> ArmorDetectorNode::initAIDetector()
 }
 
 // ==================== 核心处理功能 ====================
-void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr img_msg)
+void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
 {
     // 如果当前模式为打符模式，不进行装甲板检测
     if (!enable_) {
         return;
     }
-    if (debug_) armors_msg_.image = *img_msg;
+    if (debug_) {
+        // 若需要调试图像，需从 GPU 下载一份 CPU 图像用于叠加绘制
+        if (img_msg->gpu && !img_msg->gpu->empty()) {
+            cv::Mat cpu;
+            img_msg->gpu->download(cpu);
+            armors_msg_.image = *cv_bridge::CvImage(img_msg->header, img_msg->encoding, cpu).toImageMsg();
+        }
+    }
 
     // 检测装甲板 - 只使用 AI 检测器
     cv::Mat img;
-    std::vector<Armor> armors = aiDetectArmors(img_msg, img);
+    // 将 GPU 帧下载到 CPU 进行现有 AI 检测（后续可改为直接 GPU 输入）
+    if (img_msg->gpu && !img_msg->gpu->empty()) {
+        img_msg->gpu->download(img);
+    } else {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Empty GpuImage received");
+        return;
+    }
+    std::vector<Armor> armors = ai_detector_->detect(img, get_parameter("detect_color").as_int());
 
     // 提取from odom to gimbal的坐标系变换
     if (!updateTransform(img_msg->header.frame_id, "odom", img_msg->header.stamp)) {
@@ -217,7 +231,7 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
 
     if (debug_) {
         // draw results
-        drawResults(img_msg, img, armors);
+        drawResults(img_msg->header, img, armors);
         // Publishing marker
         publishMarkers();
     }
@@ -328,12 +342,11 @@ void ArmorDetectorNode::chooseBestPose(Armor & armor, const cv::Mat & rvec, cons
 
 // ==================== 可视化和调试功能 ====================
 void ArmorDetectorNode::drawResults(
-    const sensor_msgs::msg::Image::ConstSharedPtr & img_msg, cv::Mat & img,
-    const std::vector<Armor> & armors)
+    const std_msgs::msg::Header & header, cv::Mat & img, const std::vector<Armor> & armors)
 {
     //计算延迟
     auto final_time = this->now();
-    auto latency = (final_time - img_msg->header.stamp).seconds() * 1000;
+    auto latency = (final_time - header.stamp).seconds() * 1000;
     RCLCPP_DEBUG_STREAM(this->get_logger(), "Latency: " << latency << "ms");
     if (!debug_) {
         return;
@@ -369,7 +382,7 @@ void ArmorDetectorNode::drawResults(
     auto latency_s = latency_ss.str();
     cv::putText(
         img, latency_s, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
-    result_img_pub_.publish(cv_bridge::CvImage(img_msg->header, "rgb8", img).toImageMsg());
+    result_img_pub_.publish(cv_bridge::CvImage(header, "rgb8", img).toImageMsg());
 }
 
 void ArmorDetectorNode::createDebugPublishers()

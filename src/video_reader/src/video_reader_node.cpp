@@ -1,5 +1,7 @@
 #include "video_reader/video_reader_node.hpp"
 
+#include "video_reader/gpu_image_type_adapter.hpp"  // NOLINT: ensure adapter is compiled
+
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 namespace video_reader {
@@ -26,7 +28,12 @@ VideoReaderNode::VideoReaderNode(const rclcpp::NodeOptions& options)
 
     bool use_sensor_data_qos = this->declare_parameter("use_sensor_data_qos", true);
     auto qos = use_sensor_data_qos ? rmw_qos_profile_sensor_data : rmw_qos_profile_default;
-    camera_pub_ = image_transport::create_camera_publisher(this, "image_raw", qos);
+    camera_pub_ = image_transport::CameraPublisher(); // disable image_transport CPU camera publisher
+
+    // 发布模式：cpu|gpu|both（默认 cpu）
+    publish_mode_ = this->declare_parameter<std::string>("publish_mode", "gpu");
+    gpu_pub_ = this->create_publisher<GpuImage>("/image_gpu", rclcpp::SensorDataQoS());
+    cam_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/camera_info", rclcpp::SensorDataQoS());
 
     // Load camera info
     camera_name_ = this->declare_parameter("camera_name", "video_camera");
@@ -48,12 +55,32 @@ VideoReaderNode::VideoReaderNode(const rclcpp::NodeOptions& options)
 void VideoReaderNode::timerCallback() {
     cv::Mat frame;
     if (cap_.read(frame)) {
+        // 统一转换为 RGB
         cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
-        auto msg = cv_bridge::CvImage(std_msgs::msg::Header(), "rgb8", frame).toImageMsg();
-        msg->header.frame_id = "camera_optical_frame";
-        msg->header.stamp = this->now();
-        camera_info_msg_.header = msg->header;
-        camera_pub_.publish(*msg, camera_info_msg_);
+
+        // 时间戳与帧名
+        auto stamp = this->now();
+        const char* frame_id = "camera_optical_frame";
+
+        if (gpu_pub_) {
+            // 上传到 GPU 并以零拷贝对象发布
+            auto g = std::make_shared<cv::cuda::GpuMat>();
+            g->upload(frame);
+
+            auto gpu_msg = std::make_unique<GpuImage>();
+            gpu_msg->gpu = std::move(g);
+            gpu_msg->encoding = "rgb8";
+            gpu_msg->width = frame.cols;
+            gpu_msg->height = frame.rows;
+            gpu_msg->step = frame.step;
+            gpu_msg->header.frame_id = frame_id;
+            gpu_msg->header.stamp = stamp;
+
+            gpu_pub_->publish(std::move(gpu_msg));
+            camera_info_msg_.header.frame_id = frame_id;
+            camera_info_msg_.header.stamp = stamp;
+            cam_info_pub_->publish(camera_info_msg_);
+        }
     } else {
         RCLCPP_INFO(this->get_logger(), "End of video file reached, restarting video");
         cap_.set(cv::CAP_PROP_POS_FRAMES, 0);  // 重置视频到开头
