@@ -6,14 +6,18 @@
 
 // OpenCV
 #include <opencv2/core.hpp>
-#include <opencv2/dnn.hpp>
 #include <opencv2/opencv.hpp>
 
 // CUDA
 #include <cuda_runtime.h>
 
+// TensorRT
+#include <NvInfer.h>
+#include <NvOnnxParser.h>
+
 // STD
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -98,9 +102,43 @@ private:
      */
     Armor objectToArmor(const Object & obj);
 
-    // CUDA/OpenCV DNN 相关
-    cv::dnn::Net net_;  ///< OpenCV DNN 网络 (支持 CUDA 后端)
+    /**
+     * @brief TensorRT Logger 类
+     */
+    class Logger : public nvinfer1::ILogger
+    {
+        void log(Severity severity, const char* msg) noexcept override
+        {
+            // 只输出警告和错误信息
+            if (severity <= Severity::kWARNING)
+                std::cout << msg << std::endl;
+        }
+    };
 
+    // TensorRT 相关
+    Logger logger_;                                                    ///< TensorRT Logger
+    std::unique_ptr<nvinfer1::IRuntime> runtime_;                     ///< TensorRT Runtime
+    std::unique_ptr<nvinfer1::ICudaEngine> engine_;                   ///< TensorRT Engine
+    std::unique_ptr<nvinfer1::IExecutionContext> context_;            ///< TensorRT Execution Context
+    
+    // CUDA 相关
+    cudaStream_t stream_;                                              ///< CUDA Stream
+    void * input_device_buffer_{nullptr};                              ///< 输入缓冲区 (GPU)
+    void * output_device_buffer_{nullptr};                             ///< 输出缓冲区 (GPU)
+    void * input_device_bgr8_{nullptr};                                ///< 设备端 BGR8 中间缓冲
+    void * host_pinned_bgr8_{nullptr};                                  ///< 主机端 BGR8 固定页缓冲
+    size_t bgr8_bytes_{0};                                             ///< BGR8 缓冲区大小（字节）
+    
+    // 输入输出信息
+    std::string input_tensor_name_;                                    ///< 输入张量名称
+    std::string output_tensor_name_;                                   ///< 输出张量名称
+    nvinfer1::DataType input_data_type_{nvinfer1::DataType::kFLOAT};   ///< 输入数据类型
+    nvinfer1::DataType output_data_type_{nvinfer1::DataType::kFLOAT};  ///< 输出数据类型
+    nvinfer1::Dims input_dims_{};                                      ///< 模型输入原始维度
+    nvinfer1::Dims output_dims_{};                                     ///< 模型输出原始维度
+    size_t input_size_{0};                                             ///< 输入大小 (float 数量)
+    size_t output_size_{0};                                            ///< 输出大小 (float 数量)
+    
     // 参数
     float conf_threshold_;            ///< 置信度阈值
     float nms_threshold_;             ///< NMS 阈值
@@ -113,7 +151,7 @@ private:
     // 检测结果
     std::vector<Object> objects_;      ///< 原始检测对象
     std::vector<Object> tmp_objects_;  ///< NMS 后的检测对象
-    std::vector<float> ious_;          ///< IoU 数组
+    
 };
 
 }  // namespace rm_auto_aim

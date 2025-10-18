@@ -5,9 +5,8 @@ project(armor_detector)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-## By adding -Wall and -Werror, the compiler does not ignore warnings anymore,
-## enforcing cleaner code.
-add_definitions(-Wall -Werror)
+## Warnings: apply only to C++ sources; NVCC does not accept bare -Werror
+# We'll set C++ warnings later via target_compile_options
 
 ## Add optimization flags
 add_compile_options(-O2)
@@ -47,6 +46,27 @@ else()
     message(FATAL_ERROR "CUDA not found, CUDA is required for this project")
 endif()
 
+# 查找 TensorRT (必需)
+# TensorRT 通常安装在 /usr/local/TensorRT-* 或 /usr/lib/x86_64-linux-gnu
+set(TensorRT_ROOT "/usr/local/TensorRT" CACHE PATH "TensorRT installation directory")
+find_path(TensorRT_INCLUDE_DIR NvInfer.h
+    HINTS ${TensorRT_ROOT} $ENV{TensorRT_ROOT}
+    PATH_SUFFIXES include)
+find_library(TensorRT_LIBRARY nvinfer
+    HINTS ${TensorRT_ROOT} $ENV{TensorRT_ROOT}
+    PATH_SUFFIXES lib lib64)
+find_library(TensorRT_ONNX_LIBRARY nvonnxparser
+    HINTS ${TensorRT_ROOT} $ENV{TensorRT_ROOT}
+    PATH_SUFFIXES lib lib64)
+
+if(TensorRT_INCLUDE_DIR AND TensorRT_LIBRARY)
+    message(STATUS "TensorRT found!")
+    message(STATUS "TensorRT include: ${TensorRT_INCLUDE_DIR}")
+    message(STATUS "TensorRT library: ${TensorRT_LIBRARY}")
+else()
+    message(FATAL_ERROR "TensorRT not found! Please set TensorRT_ROOT or install TensorRT")
+endif()
+
 ###########
 ## Build ##
 ###########
@@ -55,9 +75,17 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
   DIRECTORY src
 )
 
+# 显式将 CUDA 源文件添加到目标（确保由 NVCC 编译）
+target_sources(${PROJECT_NAME}
+  PRIVATE
+    src/ai_kernels.cu
+)
+
 target_include_directories(${PROJECT_NAME} PUBLIC 
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
   ${CUDA_INCLUDE_DIRS}
+  ${TensorRT_INCLUDE_DIR}
 )
 
 target_link_directories(${PROJECT_NAME} PUBLIC 
@@ -65,10 +93,22 @@ target_link_directories(${PROJECT_NAME} PUBLIC
 )
 
 # 链接库
-set(LINK_LIBS ${OpenCV_LIBS} ${CUDA_LIBRARIES} cudnn)
+set(LINK_LIBS 
+  ${OpenCV_LIBS} 
+  ${CUDA_LIBRARIES} 
+  ${TensorRT_LIBRARY}
+  ${TensorRT_ONNX_LIBRARY}
+  cudnn
+)
 
 # 设置 CUDA 架构 (可根据需要调整)
 set_property(TARGET ${PROJECT_NAME} PROPERTY CUDA_ARCHITECTURES 75 80 86)
+
+# C++ warnings as errors; for CUDA, forward warnings to host compiler only
+target_compile_options(${PROJECT_NAME} PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-Wall -Werror>
+  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>
+)
 
 target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})
 
@@ -98,6 +138,7 @@ endif()
 #############
 
 ament_auto_package(
+  USE_SCOPED_HEADER_INSTALL_DIR
   INSTALL_TO_SHARE
   model
 )
