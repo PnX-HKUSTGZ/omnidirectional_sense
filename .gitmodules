@@ -2,3 +2,6 @@
 	path = src/auto_aim_interfaces
 	url = https://github.com/PnX-HKUSTGZ/auto_aim_interfaces.git
 	branch = main
+[submodule "src/usb_cam"]
+	path = src/usb_cam
+	url = https://github.com/PnX-HKUSTGZ/usb_cam.git
