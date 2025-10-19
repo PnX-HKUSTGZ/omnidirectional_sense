@@ -42,9 +42,10 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
     latency_pub_ = this->create_publisher<std_msgs::msg::Float64>("/latency", 10);
     marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/aiming_point", 10);
 
-    // Detect parameter client
-    detector_param_client_ =
-        std::make_shared<rclcpp::AsyncParametersClient>(this, "armor_detector");
+    // Detect parameter clients (multiple armor_detector instances)
+    detector_scan_timer_ = this->create_wall_timer(std::chrono::seconds(1), [this]() {
+        refreshDetectorClients();
+    });
 
     // Tracker reset service client
     reset_tracker_client_ = this->create_client<std_srvs::srv::Trigger>("/tracker/reset");
@@ -80,6 +81,8 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
 
 RMSerialDriver::~RMSerialDriver()
 {
+    // stop timers first
+    detector_scan_timer_.reset();
     if (receive_thread_.joinable()) {
         receive_thread_.join();
     }
@@ -290,26 +293,37 @@ void RMSerialDriver::reopenPort()
 
 void RMSerialDriver::setParam(const rclcpp::Parameter & param)
 {
-    if (!detector_param_client_->service_is_ready()) {
-        RCLCPP_WARN(get_logger(), "Service not ready, skipping parameter set");
+    // cache last param
+    last_param_ = param;
+    std::lock_guard<std::mutex> lk(detectors_mutex_);
+    if (detector_param_clients_.empty()) {
+        RCLCPP_WARN(get_logger(), "No detector param clients found yet, will retry automatically");
         return;
     }
 
-    if (!set_param_future_.valid() ||
-        set_param_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        RCLCPP_INFO(get_logger(), "Setting detect_color to %ld...", param.as_int());
-        set_param_future_ = detector_param_client_->set_parameters(
-            {param}, [this, param](const ResultFuturePtr & results) {
+    for (auto & kv : detector_param_clients_) {
+        const auto & name = kv.first;
+        auto & client = kv.second;
+
+        if (!client->service_is_ready()) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "[%s] param service not ready", name.c_str());
+            continue;
+        }
+
+        auto & fut = set_param_futures_[name];
+        if (!fut.valid() || fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            RCLCPP_INFO(get_logger(), "Setting %s.detect_color to %ld...", name.c_str(), param.as_int());
+            fut = client->set_parameters({param}, [this, name, param](const ResultFuturePtr & results) {
                 for (const auto & result : results.get()) {
                     if (!result.successful) {
-                        RCLCPP_ERROR(
-                            get_logger(), "Failed to set parameter: %s", result.reason.c_str());
+                        RCLCPP_ERROR(get_logger(), "[%s] Failed to set parameter: %s", name.c_str(), result.reason.c_str());
                         return;
                     }
                 }
-                RCLCPP_INFO(get_logger(), "Successfully set detect_color to %ld!", param.as_int());
+                RCLCPP_INFO(get_logger(), "[%s] Successfully set detect_color to %ld!", name.c_str(), param.as_int());
                 initial_set_param_ = true;
             });
+        }
     }
 }
 
@@ -325,6 +339,59 @@ void RMSerialDriver::resetTracker()
     auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
     reset_tracker_client_->async_send_request(request);
     RCLCPP_INFO(get_logger(), "Reset tracker!");
+}
+
+void RMSerialDriver::refreshDetectorClients()
+{
+    // Discover all nodes whose names start with detector_name_prefix_
+    auto graph = this->get_node_graph_interface();
+    auto names_and_ns = graph->get_node_names_and_namespaces();
+
+    std::unordered_map<std::string, rclcpp::AsyncParametersClient::SharedPtr> new_map;
+    for (const auto & pair : names_and_ns) {
+        const auto & n = pair.first;
+        const auto & ns = pair.second;
+        if (n.rfind(detector_name_prefix_, 0) == 0) { // starts with
+            // Build full node name with namespace
+            std::string full_name = ns;
+            if (full_name.empty() || full_name == "/") {
+                full_name = n;
+            } else {
+                if (full_name.back() != '/') full_name += '/';
+                full_name += n;
+            }
+            try {
+                auto it = detector_param_clients_.find(full_name);
+                if (it != detector_param_clients_.end()) {
+                    new_map.emplace(full_name, it->second);
+                } else {
+                    auto client = std::make_shared<rclcpp::AsyncParametersClient>(this, full_name);
+                    new_map.emplace(full_name, client);
+                    RCLCPP_INFO(get_logger(), "Discovered detector node: %s", full_name.c_str());
+                    // apply last param if exists
+                    if (last_param_.has_value()) {
+                        if (client->service_is_ready()) {
+                            RCLCPP_INFO(get_logger(), "Applying cached %s=%ld to %s", last_param_->get_name().c_str(), last_param_->as_int(), full_name.c_str());
+                            client->set_parameters({*last_param_}, [this, full_name](const ResultFuturePtr & results) {
+                                for (const auto & result : results.get()) {
+                                    if (!result.successful) {
+                                        RCLCPP_ERROR(get_logger(), "[%s] Failed to set cached parameter: %s", full_name.c_str(), result.reason.c_str());
+                                        return;
+                                    }
+                                }
+                                RCLCPP_INFO(get_logger(), "[%s] Cached parameter applied", full_name.c_str());
+                            });
+                        }
+                    }
+                }
+            } catch (const std::exception & e) {
+                RCLCPP_WARN(get_logger(), "Failed to create param client for %s: %s", n.c_str(), e.what());
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lk(detectors_mutex_);
+    detector_param_clients_.swap(new_map);
 }
 
 

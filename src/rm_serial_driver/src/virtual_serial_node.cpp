@@ -6,6 +6,9 @@
 #include <condition_variable>
 #include <future>
 #include <memory>
+#include <unordered_map>
+#include <mutex>
+#include <optional>
 #include <rclcpp/executors.hpp>
 #include <thread>
 // ros2
@@ -28,9 +31,10 @@ public:
     {
         RCLCPP_INFO(this->get_logger(), "Start VirtualSerialNode!");
 
-        // Detect parameter client
-        detector_param_client_ =
-            std::make_shared<rclcpp::AsyncParametersClient>(this, "armor_detector");
+        // Detect parameter clients (multiple armor_detector instances)
+        detector_scan_timer_ = this->create_wall_timer(std::chrono::seconds(1), [this]() {
+            refreshDetectorClients();
+        });
 
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
@@ -72,26 +76,33 @@ public:
 
     void setParam(const rclcpp::Parameter & param)
     {
-        if (!detector_param_client_->service_is_ready()) {
-            RCLCPP_WARN(get_logger(), "Service not ready, skipping parameter set");
+        last_param_ = param;
+        std::lock_guard<std::mutex> lk(detectors_mutex_);
+        if (detector_param_clients_.empty()) {
+            RCLCPP_WARN(get_logger(), "No detector param clients found yet, will retry automatically");
             return;
         }
-        if (!set_param_future_.valid() ||
-            set_param_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            RCLCPP_INFO(get_logger(), "Setting detect_color to %ld...", param.as_int());
-            set_param_future_ = detector_param_client_->set_parameters(
-                {param}, [this, param](const ResultFuturePtr & results) {
+        for (auto & kv : detector_param_clients_) {
+            const auto & name = kv.first;
+            auto & client = kv.second;
+            if (!client->service_is_ready()) {
+                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "[%s] param service not ready", name.c_str());
+                continue;
+            }
+            auto & fut = set_param_futures_[name];
+            if (!fut.valid() || fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                RCLCPP_INFO(get_logger(), "Setting %s.detect_color to %ld...", name.c_str(), param.as_int());
+                fut = client->set_parameters({param}, [this, name, param](const ResultFuturePtr & results) {
                     for (const auto & result : results.get()) {
                         if (!result.successful) {
-                            RCLCPP_ERROR(
-                                get_logger(), "Failed to set parameter: %s", result.reason.c_str());
+                            RCLCPP_ERROR(get_logger(), "[%s] Failed to set parameter: %s", name.c_str(), result.reason.c_str());
                             return;
                         }
                     }
-                    RCLCPP_INFO(
-                        get_logger(), "Successfully set detect_color to %ld!", param.as_int());
+                    RCLCPP_INFO(get_logger(), "[%s] Successfully set detect_color to %ld!", name.c_str(), param.as_int());
                     initial_set_param_ = true;
                 });
+            }
         }
     }
 
@@ -102,13 +113,64 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     geometry_msgs::msg::TransformStamped transform_stamped_;
 
-    // Param client to set detect_colr
+    // Param clients to set detect_color for multiple detectors
     using ResultFuturePtr =
         std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>>;
     bool initial_set_param_ = false;
     uint8_t previous_receive_color_ = 0;
-    rclcpp::AsyncParametersClient::SharedPtr detector_param_client_;
-    ResultFuturePtr set_param_future_;
+    std::unordered_map<std::string, rclcpp::AsyncParametersClient::SharedPtr> detector_param_clients_;
+    std::unordered_map<std::string, ResultFuturePtr> set_param_futures_;
+    std::string detector_name_prefix_ = "armor_detector";
+    rclcpp::TimerBase::SharedPtr detector_scan_timer_;
+    std::mutex detectors_mutex_;
+    std::optional<rclcpp::Parameter> last_param_;
+    void refreshDetectorClients()
+    {
+        auto graph = this->get_node_graph_interface();
+        auto names_and_ns = graph->get_node_names_and_namespaces();
+        std::unordered_map<std::string, rclcpp::AsyncParametersClient::SharedPtr> new_map;
+        for (const auto & pair : names_and_ns) {
+            const auto & n = pair.first;
+            const auto & ns = pair.second;
+            if (n.rfind(detector_name_prefix_, 0) == 0) {
+                std::string full_name = ns;
+                if (full_name.empty() || full_name == "/") {
+                    full_name = n;
+                } else {
+                    if (full_name.back() != '/') full_name += '/';
+                    full_name += n;
+                }
+                try {
+                    auto it = detector_param_clients_.find(full_name);
+                    if (it != detector_param_clients_.end()) {
+                        new_map.emplace(full_name, it->second);
+                    } else {
+                        auto client = std::make_shared<rclcpp::AsyncParametersClient>(this, full_name);
+                        new_map.emplace(full_name, client);
+                        RCLCPP_INFO(get_logger(), "Discovered detector node: %s", full_name.c_str());
+                        if (last_param_.has_value()) {
+                            if (client->service_is_ready()) {
+                                RCLCPP_INFO(get_logger(), "Applying cached %s=%ld to %s", last_param_->get_name().c_str(), last_param_->as_int(), full_name.c_str());
+                                client->set_parameters({*last_param_}, [this, full_name](const ResultFuturePtr & results) {
+                                    for (const auto & result : results.get()) {
+                                        if (!result.successful) {
+                                            RCLCPP_ERROR(get_logger(), "[%s] Failed to set cached parameter: %s", full_name.c_str(), result.reason.c_str());
+                                            return;
+                                        }
+                                    }
+                                    RCLCPP_INFO(get_logger(), "[%s] Cached parameter applied", full_name.c_str());
+                                });
+                            }
+                        }
+                    }
+                } catch (const std::exception & e) {
+                    RCLCPP_WARN(get_logger(), "Failed to create param client for %s: %s", n.c_str(), e.what());
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lk(detectors_mutex_);
+        detector_param_clients_.swap(new_map);
+    }
     inline Eigen::Vector3d getRPY(const Eigen::Matrix3d & rotation_matrix)
     {
         return rotation_matrix.eulerAngles(2, 1, 0).reverse();

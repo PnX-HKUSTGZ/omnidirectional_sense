@@ -24,6 +24,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unordered_map>
+#include <mutex>
+#include <optional>
 
 #include "auto_aim_interfaces/msg/target.hpp"
 
@@ -47,6 +50,7 @@ private:
 
     void setParam(const rclcpp::Parameter & param);
     void resetTracker();
+    void refreshDetectorClients();
 
     // Serial port
     std::unique_ptr<IoContext> owned_ctx_;
@@ -54,13 +58,17 @@ private:
     std::unique_ptr<drivers::serial_driver::SerialPortConfig> device_config_;
     std::unique_ptr<drivers::serial_driver::SerialDriver> serial_driver_;
 
-    // Param client to set detect_colr
+    // Param clients to set detect_color for multiple detectors
     using ResultFuturePtr =
         std::shared_future<std::vector<rcl_interfaces::msg::SetParametersResult>>;
     bool initial_set_param_ = false;
     uint8_t previous_receive_color_ = 0;
-    rclcpp::AsyncParametersClient::SharedPtr detector_param_client_;
-    ResultFuturePtr set_param_future_;
+    std::unordered_map<std::string, rclcpp::AsyncParametersClient::SharedPtr> detector_param_clients_;
+    std::unordered_map<std::string, ResultFuturePtr> set_param_futures_;
+    std::string detector_name_prefix_ = "armor_detector";
+    rclcpp::TimerBase::SharedPtr detector_scan_timer_;
+    std::mutex detectors_mutex_;
+    std::optional<rclcpp::Parameter> last_param_;
 
     // Service client to reset tracker
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_tracker_client_;
