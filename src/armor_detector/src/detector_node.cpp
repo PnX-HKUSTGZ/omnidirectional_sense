@@ -224,6 +224,10 @@ void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
     }
     // Publishing detected armors
     armors_pub_->publish(armors_msg_);
+    
+    auto final_time = this->now();
+    auto latency = (final_time - img_msg->header.stamp).seconds() * 1000;
+    std::cerr << "Latency: " << latency << "ms\n"; 
 
     if (debug_) {
         // draw results（若 cpu_img 为空，则从 GPU 下载一份临时图像供绘制）
@@ -328,6 +332,7 @@ void ArmorDetectorNode::drawResults(
     //计算延迟
     auto final_time = this->now();
     auto latency = (final_time - header.stamp).seconds() * 1000;
+    std::cerr << "Latency: " << latency << "ms\n"; 
     RCLCPP_DEBUG_STREAM(this->get_logger(), "Latency: " << latency << "ms");
     if (!debug_) {
         return;

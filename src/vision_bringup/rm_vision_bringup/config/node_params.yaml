@@ -19,7 +19,7 @@
     has_rune: false
 /armor_detector:
   ros__parameters:
-    debug: true
+    debug: false
     detect_color: 0 #0:red;1:blue
 
     binary_thres: 60
