@@ -295,6 +295,7 @@ void ArmorDetectorNode::chooseBestPose(Armor & armor, const cv::Mat & rvec, cons
         rpy(2) = std::atan2(std::sin(M_PI + rpy(2)), std::cos(M_PI + rpy(2)));  // 旋转yaw 180度
     }
     //前哨站装甲板负倾角
+    armor.sign = (armor.left_light.tilt_angle + armor.right_light.tilt_angle) * 0.5 <= 0.0;
     if (armor.number == "outpost") armor.sign = !armor.sign;
     // armor.sign 为0则为右侧装甲板，为1则为左侧装甲板
     if (!armor.sign) {
