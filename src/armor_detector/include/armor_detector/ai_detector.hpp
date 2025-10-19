@@ -134,7 +134,6 @@ private:
     int    max_post_out_{1024};                                         ///< 候选最大数量
 
     // 复用的缓冲区，避免在 infer 中分配大内存
-    cv::cuda::GpuMat resized_gpu_;                                      ///< 预分配的缩放输出 GPU 图
     std::vector<PostDet> host_post_dets_;                               ///< 预分配的主机候选缓冲
     std::vector<cv::Rect> boxes_buf_;                                   ///< 预分配的 NMS 框缓冲
     std::vector<float> scores_buf_;                                     ///< 预分配的 NMS 分数缓冲

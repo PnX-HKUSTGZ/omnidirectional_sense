@@ -8,8 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 ## Warnings: apply only to C++ sources; NVCC does not accept bare -Werror
 # We'll set C++ warnings later via target_compile_options
 
-## Add optimization flags
-add_compile_options(-O2)
+## 优化：按构建类型分别配置（避免全局 -O2 覆盖/冲突）
+# C++ 优化在 Release/RelWithDebInfo 打开，Debug 保持易调试
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3")
 
 ## Export compile commands for clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -39,8 +41,14 @@ if(CUDA_FOUND)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 14)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    # 添加 CUDA 编译选项
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O2")
+    # CUDA 优化选项（按构建类型）：
+    # -O3：更激进优化；--use_fast_math：快速数学；-lineinfo：便于 Nsight 对应源码；
+    # -Xptxas -v：显示寄存器/共享内存用量；-Xptxas -dlcm=ca：全局加载缓存策略（可A/B）。
+    set(CUDA_RELEASE_FLAGS "-O3 --use_fast_math -lineinfo -Xptxas=-v,-dlcm=ca")
+    set(CUDA_RELWITHDEBINFO_FLAGS "-O3 -lineinfo -Xptxas=-v")
+    # Debug 不启用 -G（会关闭优化），保留默认以便调试
+    set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} ${CUDA_RELEASE_FLAGS}")
+    set(CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_RELWITHDEBINFO} ${CUDA_RELWITHDEBINFO_FLAGS}")
     add_definitions(-DWITH_CUDA)
 else()
     message(FATAL_ERROR "CUDA not found, CUDA is required for this project")
@@ -107,7 +115,7 @@ set_property(TARGET ${PROJECT_NAME} PROPERTY CUDA_ARCHITECTURES 75 80 86)
 # C++ warnings as errors; for CUDA, forward warnings to host compiler only
 target_compile_options(${PROJECT_NAME} PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall -Werror>
-  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-O3 --use_fast_math -lineinfo -Xptxas=-v>
 )
 
 target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})

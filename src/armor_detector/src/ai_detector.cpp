@@ -126,7 +126,6 @@ AIDetector::AIDetector(const std::string& model_path, const std::string&, float 
     checkCuda(cudaMalloc(&device_post_count_, sizeof(int)), "cudaMalloc post_count");
 
     // Pre-create reusable buffers
-    resized_gpu_.create(IMAGE_HEIGHT, IMAGE_WIDTH, CV_8UC3);
     host_post_dets_.reserve(max_post_out_);
     boxes_buf_.reserve(max_post_out_);
     scores_buf_.reserve(max_post_out_);
