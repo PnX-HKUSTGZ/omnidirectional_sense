@@ -1,6 +1,14 @@
 /video_reader_node:
   ros__parameters:
     camera_info_url: package://rm_vision_bringup/config/camera_info.yaml
+/usb_cam_node:
+  ros__parameters:
+    framerate: 30.0
+    pixel_format: "mjpeg2rgb"
+    av_device_format: "YUV422P"
+    image_width: 1920
+    image_height: 1080
+    camera_info_url: "package://rm_vision_bringup/config/camera_info.yaml"
 /virtual_serial: #虚拟串口
   ros__parameters:
     roll: 0.0

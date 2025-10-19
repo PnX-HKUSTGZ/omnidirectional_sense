@@ -1,5 +1,12 @@
 camera: hik
 
+# 相机设备映射 (USB相机的 /dev/video 设备路径)
+camera_devices:
+  0: "/dev/video0"
+  1: "/dev/video2"
+  2: "/dev/video4"
+  3: "/dev/video6"
+
 # 四个摄像头的 TF 参数配置
 # cam0: 前方摄像头
 odom2camera_0:
@@ -27,7 +34,7 @@ serial_log_level: INFO
 
 # 设置启动参数
 # true: 读取视频 false: 读取相机
-video_play: true
+video_play: false
 # true: 开启打符 false：关闭打符 非必要保持常开
 rune: true
 # true: 单计算机测试模式 false: 多计算机协同工作
