@@ -7,6 +7,7 @@
 // OpenCV
 #include <opencv2/core.hpp>
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/cuda.hpp>
 
 // CUDA
 #include <cuda_runtime.h>
@@ -23,8 +24,8 @@
 #include <string>
 #include <vector>
 
-#include "armor_detector/base_detector.hpp"
 #include "armor_detector/types.hpp"
+#include "armor_detector/ai_kernels.hpp"  // for PostDet
 
 namespace rm_auto_aim
 {
@@ -34,7 +35,7 @@ namespace rm_auto_aim
  * 
  * 使用深度学习模型进行装甲板检测和数字识别
  */
-class AIDetector : public BaseDetector
+class AIDetector
 {
 public:
     /**
@@ -52,39 +53,39 @@ public:
     /**
      * @brief 析构函数
      */
-    ~AIDetector() override;
+    ~AIDetector();
 
     /**
-     * @brief 检测装甲板
+     * @brief 直接使用 GPU 图像进行检测（建议传入 BGR8，任意尺寸）
      * 
-     * @param input 输入图像
+     * @param input_gpu 输入 GPU 图像（CV_8UC3）
      * @param detect_color 检测颜色 (0: red, 1: blue)
      * @return std::vector<Armor> 检测到的装甲板数组
      */
-    std::vector<Armor> detect(const cv::Mat & input, int detect_color) override;
+    std::vector<Armor> detect(const cv::cuda::GpuMat & input_gpu, int detect_color);
 
     /**
      * @brief 在图像上绘制检测结果
      * 
      * @param img 要绘制结果的图像
      */
-    void drawResults(cv::Mat & img) override;
+    void drawResults(cv::Mat & img);
 
     /**
      * @brief 获取检测器类型名称
      * 
      * @return std::string 检测器类型名称
      */
-    std::string getDetectorType() const override { return "AIDetector"; }
+    std::string getDetectorType() const { return "AIDetector"; }
 
 private:
     /**
      * @brief 执行模型推理
      * 
-     * @param img 输入图像
+     * @param gpu_bgr8 输入GPU图像
      * @param detect_color 检测颜色
      */
-    void infer(const cv::Mat & img, int detect_color);
+    void infer(const cv::cuda::GpuMat & gpu_bgr8, int detect_color);
 
     /**
      * @brief Sigmoid 激活函数
@@ -126,8 +127,18 @@ private:
     void * input_device_buffer_{nullptr};                              ///< 输入缓冲区 (GPU)
     void * output_device_buffer_{nullptr};                             ///< 输出缓冲区 (GPU)
     void * input_device_bgr8_{nullptr};                                ///< 设备端 BGR8 中间缓冲
-    void * host_pinned_bgr8_{nullptr};                                  ///< 主机端 BGR8 固定页缓冲
     size_t bgr8_bytes_{0};                                             ///< BGR8 缓冲区大小（字节）
+    // GPU 后处理缓冲
+    void * device_post_dets_{nullptr};                                  ///< 设备端候选输出数组
+    int  * device_post_count_{nullptr};                                 ///< 设备端候选数量计数器
+    int    max_post_out_{1024};                                         ///< 候选最大数量
+
+    // 复用的缓冲区，避免在 infer 中分配大内存
+    cv::cuda::GpuMat resized_gpu_;                                      ///< 预分配的缩放输出 GPU 图
+    std::vector<PostDet> host_post_dets_;                               ///< 预分配的主机候选缓冲
+    std::vector<cv::Rect> boxes_buf_;                                   ///< 预分配的 NMS 框缓冲
+    std::vector<float> scores_buf_;                                     ///< 预分配的 NMS 分数缓冲
+    std::vector<int> idx_buf_;                                          ///< 预分配的 NMS 索引缓冲
     
     // 输入输出信息
     std::string input_tensor_name_;                                    ///< 输入张量名称
@@ -151,6 +162,7 @@ private:
     // 检测结果
     std::vector<Object> objects_;      ///< 原始检测对象
     std::vector<Object> tmp_objects_;  ///< NMS 后的检测对象
+    std::vector<Armor> armors_;        ///< 本帧装甲板结果
     
 };
 

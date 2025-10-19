@@ -1,14 +1,17 @@
 // Copyright 2024 PnX-HKUSTGZ
 // Licensed under the MIT License.
 
-#include "armor_detector/ai_detector.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cuda_fp16.h>
 #include <fstream>
 #include <cstring>
 #include <stdexcept>
+#include <opencv2/cudaimgproc.hpp>
+#include <opencv2/cudawarping.hpp>
+#include <rclcpp/rclcpp.hpp>
 
+#include "armor_detector/ai_detector.hpp"
 #include "armor_detector/ai_kernels.hpp"
 
 namespace rm_auto_aim
@@ -48,22 +51,6 @@ inline size_t computeSize(const nvinfer1::Dims& d)
         vol *= static_cast<size_t>(d.d[i] > 0 ? d.d[i] : 1);
     return vol;
 }
-
-inline void convertFloatToHalf(const std::vector<float>& src, std::vector<__half>& dst)
-{
-    dst.resize(src.size());
-    for (size_t i = 0; i < src.size(); ++i)
-        dst[i] = __float2half(src[i]);
-}
-
-inline void convertHalfToFloat(const std::vector<__half>& src, std::vector<float>& dst)
-{
-    dst.resize(src.size());
-    for (size_t i = 0; i < src.size(); ++i)
-        dst[i] = __half2float(src[i]);
-}
-
-// moved to ai_kernels.cu
 
 }  // namespace
 
@@ -110,6 +97,13 @@ AIDetector::AIDetector(const std::string& model_path, const std::string&, float 
     input_data_type_ = engine_->getTensorDataType(input_tensor_name_.c_str());
     output_data_type_ = engine_->getTensorDataType(output_tensor_name_.c_str());
 
+    // 固定支持：输入 FP16，输出 FP32（当前模型约定）。
+    if (input_data_type_ != nvinfer1::DataType::kHALF || output_data_type_ != nvinfer1::DataType::kFLOAT) {
+        throw std::runtime_error("AIDetector expects engine with FP16 input and FP32 output. Got input="
+                                 + std::to_string(static_cast<int>(input_data_type_)) +
+                                 " output=" + std::to_string(static_cast<int>(output_data_type_)));
+    }
+
     const int fallback[4] = {1, 3, IMAGE_HEIGHT, IMAGE_WIDTH};
     for (int i = 0; i < input_dims_.nbDims; ++i)
         if (input_dims_.d[i] == -1) input_dims_.d[i] = fallback[i];
@@ -125,8 +119,18 @@ AIDetector::AIDetector(const std::string& model_path, const std::string&, float 
 
     // Allocate BGR8 pinned/device buffers for GPU preprocess (H x W x 3)
     bgr8_bytes_ = static_cast<size_t>(IMAGE_WIDTH) * IMAGE_HEIGHT * 3;
-    checkCuda(cudaMallocHost(&host_pinned_bgr8_, bgr8_bytes_), "cudaMallocHost bgr8");
     checkCuda(cudaMalloc(&input_device_bgr8_, bgr8_bytes_), "cudaMalloc bgr8");
+
+    // Allocate GPU postprocess buffers
+    checkCuda(cudaMalloc(&device_post_dets_, static_cast<size_t>(max_post_out_) * sizeof(PostDet)), "cudaMalloc post_dets");
+    checkCuda(cudaMalloc(&device_post_count_, sizeof(int)), "cudaMalloc post_count");
+
+    // Pre-create reusable buffers
+    resized_gpu_.create(IMAGE_HEIGHT, IMAGE_WIDTH, CV_8UC3);
+    host_post_dets_.reserve(max_post_out_);
+    boxes_buf_.reserve(max_post_out_);
+    scores_buf_.reserve(max_post_out_);
+    idx_buf_.reserve(max_post_out_);
 
     std::cout << "[AIDetector] Engine loaded. Input: " << input_tensor_name_
               << " Output: " << output_tensor_name_ << std::endl;
@@ -137,20 +141,21 @@ AIDetector::~AIDetector()
     if (input_device_buffer_) cudaFree(input_device_buffer_);
     if (output_device_buffer_) cudaFree(output_device_buffer_);
     if (input_device_bgr8_) cudaFree(input_device_bgr8_);
-    if (host_pinned_bgr8_) cudaFreeHost(host_pinned_bgr8_);
+    
+    if (device_post_dets_) cudaFree(device_post_dets_);
+    if (device_post_count_) cudaFree(device_post_count_);
     if (stream_) cudaStreamDestroy(stream_);
 }
 
-std::vector<Armor> AIDetector::detect(const cv::Mat& img, int color)
+std::vector<Armor> AIDetector::detect(const cv::cuda::GpuMat& gpu_img, int color)
 {
-    // 清理本帧状态，避免累积
+    // 清理本帧状态
     armors_.clear();
     objects_.clear();
     tmp_objects_.clear();
 
-    infer(img, color);
+    infer(gpu_img, color);
 
-    // 使用 NMS 之后的结果构建装甲板，避免重复
     armors_.reserve(tmp_objects_.size());
     for (const auto& o : tmp_objects_) {
         Armor a = objectToArmor(o);
@@ -159,103 +164,82 @@ std::vector<Armor> AIDetector::detect(const cv::Mat& img, int color)
     return armors_;
 }
 
-void AIDetector::infer(const cv::Mat& img, int detect_color)
+void AIDetector::infer(const cv::cuda::GpuMat& gpu_bgr8, int detect_color)
 {
-    // 清理本次推理的结果容器
+    // 清理结果
     objects_.clear();
     tmp_objects_.clear();
 
-    // 1) CPU 仅做 resize 到目标网络输入尺寸（保持 BGR8）
-    cv::Mat resized;
-    cv::resize(img, resized, {IMAGE_WIDTH, IMAGE_HEIGHT});
-    if (resized.type() != CV_8UC3) {
-        cv::Mat tmp;
-        resized.convertTo(tmp, CV_8UC3);
-        resized = tmp;
+    // 1) 输入检查
+    if (gpu_bgr8.type() != CV_8UC3) {
+        RCLCPP_ERROR(rclcpp::get_logger("AIDetector"),
+                     "[AIDetector] Input GpuMat must be CV_8UC3, aborting inference.");
+        return;
     }
-
-    // 2) 复制 BGR8 到固定页主机缓冲
-    std::memcpy(host_pinned_bgr8_, resized.data, bgr8_bytes_);
-
-    // 3) 异步拷贝到设备端 BGR8 缓冲
-    checkCuda(cudaMemcpyAsync(input_device_bgr8_, host_pinned_bgr8_, bgr8_bytes_, cudaMemcpyHostToDevice, stream_), "Memcpy H2D BGR8");
-
-    // 4) 在 GPU 上将 BGR8(HWC) 转换为 RGB(NCHW, 归一化) 直接写到 TensorRT 输入缓冲
-    if (input_data_type_ == nvinfer1::DataType::kHALF) {
-        launch_bgr8_to_rgb_nchw_fp16(static_cast<const unsigned char*>(input_device_bgr8_),
-                                     static_cast<__half*>(input_device_buffer_),
-                                     IMAGE_WIDTH, IMAGE_HEIGHT, stream_);
-    } else if (input_data_type_ == nvinfer1::DataType::kFLOAT) {
-        launch_bgr8_to_rgb_nchw_fp32(static_cast<const unsigned char*>(input_device_bgr8_),
-                                     static_cast<float*>(input_device_buffer_),
-                                     IMAGE_WIDTH, IMAGE_HEIGHT, stream_);
-    } else {
-        throw std::runtime_error("Unsupported input data type for GPU preprocess");
-    }
+    // 2) 融合：从原图直接双线性缩放 + BGR->RGB + NCHW + 归一化到 FP16 输入
+    launch_resize_bgr8_to_rgb_nchw_fp16(
+        static_cast<const unsigned char*>(gpu_bgr8.ptr<unsigned char>()),
+        static_cast<size_t>(gpu_bgr8.step),
+        gpu_bgr8.cols, gpu_bgr8.rows,
+        static_cast<__half*>(input_device_buffer_), IMAGE_WIDTH, IMAGE_HEIGHT,
+        stream_);
 
     context_->setInputShape(input_tensor_name_.c_str(), input_dims_);
     context_->setTensorAddress(input_tensor_name_.c_str(), input_device_buffer_);
     context_->setTensorAddress(output_tensor_name_.c_str(), output_device_buffer_);
     if (!context_->enqueueV3(stream_)) throw std::runtime_error("TensorRT enqueue failed");
 
-    // Copy back result
-    std::vector<float> output_fp32(output_size_);
-    size_t out_bytes = output_size_ * getElementSize(output_data_type_);
-    if (output_data_type_ == nvinfer1::DataType::kHALF) {
-        std::vector<__half> output_fp16(output_size_);
-        checkCuda(cudaMemcpyAsync(output_fp16.data(), output_device_buffer_, out_bytes, cudaMemcpyDeviceToHost, stream_), "Memcpy D2H");
-        cudaStreamSynchronize(stream_);
-        convertHalfToFloat(output_fp16, output_fp32);
-    } else {
-        checkCuda(cudaMemcpyAsync(output_fp32.data(), output_device_buffer_, out_bytes, cudaMemcpyDeviceToHost, stream_), "Memcpy D2H");
-        cudaStreamSynchronize(stream_);
-    }
-
-    // === Postprocess ===
+    // GPU 后处理：在设备端完成 sigmoid/阈值/argmax/过滤/压缩
     const int kAttr = 22;
-    int num_det = output_size_ / kAttr;
-    cv::Mat out(num_det, kAttr, CV_32F, output_fp32.data());
-    std::vector<cv::Rect> boxes;
-    std::vector<float> scores;
+    int num_det = static_cast<int>(output_size_ / kAttr);
+    float sx = static_cast<float>(gpu_bgr8.cols) / IMAGE_WIDTH;
+    float sy = static_cast<float>(gpu_bgr8.rows) / IMAGE_HEIGHT;
 
-    for (int i = 0; i < out.rows; ++i) {
-        float conf = sigmoid(out.at<float>(i, 8));
-        if (conf < conf_threshold_) continue;
-        cv::Point cid, colorid;
-        double sc_num, sc_color;
-        cv::minMaxLoc(out.row(i).colRange(13, 22), nullptr, &sc_num, nullptr, &cid);
-        cv::minMaxLoc(out.row(i).colRange(9, 13), nullptr, &sc_color, nullptr, &colorid);
+    // 清零计数器
+    checkCuda(cudaMemsetAsync(device_post_count_, 0, sizeof(int), stream_), "Memset post_count");
 
-        if (colorid.x >= 2) continue;
-        if ((detect_color == 0 && colorid.x == 1) || (detect_color == 1 && colorid.x == 0)) continue;
+    // 后处理固定走 FP32
+    launch_postprocess_fp32(static_cast<const float*>(output_device_buffer_), num_det, conf_threshold_,
+                            detect_color, sx, sy,
+                            static_cast<PostDet*>(device_post_dets_), max_post_out_, device_post_count_,
+                            stream_);
 
-        Object obj;
-        obj.label = cid.x;
-        obj.color = colorid.x;
-        obj.prob = conf;
+    // 拷回数量
+    int host_count = 0;
+    checkCuda(cudaMemcpyAsync(&host_count, device_post_count_, sizeof(int), cudaMemcpyDeviceToHost, stream_), "Memcpy count D2H");
+    cudaStreamSynchronize(stream_);
+    host_count = std::max(0, std::min(host_count, max_post_out_));
 
-        float sx = static_cast<float>(img.cols) / IMAGE_WIDTH;
-        float sy = static_cast<float>(img.rows) / IMAGE_HEIGHT;
-        for (int j = 0; j < 8; ++j)
-            obj.landmarks[j] = out.at<float>(i, j) * (j % 2 ? sy : sx);
-
-        float minx = 1e9, maxx = 0, miny = 1e9, maxy = 0;
-        for (int k = 0; k < 8; k += 2) {
-            minx = std::min(minx, obj.landmarks[k]);
-            maxx = std::max(maxx, obj.landmarks[k]);
-            miny = std::min(miny, obj.landmarks[k + 1]);
-            maxy = std::max(maxy, obj.landmarks[k + 1]);
-        }
-
-        obj.rect = cv::Rect(minx, miny, maxx - minx, maxy - miny);
-        objects_.push_back(obj);
-        boxes.push_back(obj.rect);
-        scores.push_back(sc_num);
+    // 拷回候选
+    host_post_dets_.resize(host_count);
+    if (host_count > 0) {
+        checkCuda(cudaMemcpyAsync(host_post_dets_.data(), device_post_dets_, static_cast<size_t>(host_count) * sizeof(PostDet),
+                                  cudaMemcpyDeviceToHost, stream_), "Memcpy dets D2H");
+        cudaStreamSynchronize(stream_);
     }
 
-    std::vector<int> idx;
-    cv::dnn::NMSBoxes(boxes, scores, conf_threshold_, nms_threshold_, idx);
-    for (int i : idx) tmp_objects_.push_back(objects_[i]);
+    // CPU 侧只做 NMS
+    boxes_buf_.clear();
+    scores_buf_.clear();
+    boxes_buf_.reserve(host_count);
+    scores_buf_.reserve(host_count);
+    for (int i = 0; i < host_count; ++i) {
+        const auto &d = host_post_dets_[i];
+        Object obj;
+        obj.label = d.label;
+        obj.color = d.color;
+        obj.prob  = d.prob;
+        for (int j = 0; j < 8; ++j) obj.landmarks[j] = d.landmarks[j];
+        obj.rect = cv::Rect(static_cast<int>(d.x), static_cast<int>(d.y),
+                            static_cast<int>(d.w), static_cast<int>(d.h));
+        objects_.push_back(obj);
+        boxes_buf_.push_back(obj.rect);
+        scores_buf_.push_back(d.score_num);
+    }
+
+    idx_buf_.clear();
+    cv::dnn::NMSBoxes(boxes_buf_, scores_buf_, conf_threshold_, 0, idx_buf_);
+    for (int i : idx_buf_) tmp_objects_.push_back(objects_[i]);
 }
 
 Armor AIDetector::objectToArmor(const Object& o)

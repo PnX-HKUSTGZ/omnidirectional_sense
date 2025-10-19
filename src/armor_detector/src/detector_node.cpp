@@ -113,25 +113,21 @@ void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
     if (!enable_) {
         return;
     }
+    cv::Mat cpu_img; // 仅在 debug 时填充
     if (debug_) {
         // 若需要调试图像，需从 GPU 下载一份 CPU 图像用于叠加绘制
         if (img_msg->gpu && !img_msg->gpu->empty()) {
-            cv::Mat cpu;
-            img_msg->gpu->download(cpu);
-            armors_msg_.image = *cv_bridge::CvImage(img_msg->header, img_msg->encoding, cpu).toImageMsg();
+            img_msg->gpu->download(cpu_img);
+            armors_msg_.image = *cv_bridge::CvImage(img_msg->header, img_msg->encoding, cpu_img).toImageMsg();
         }
     }
 
-    // 检测装甲板 - 只使用 AI 检测器
-    cv::Mat img;
-    // 将 GPU 帧下载到 CPU 进行现有 AI 检测（后续可改为直接 GPU 输入）
-    if (img_msg->gpu && !img_msg->gpu->empty()) {
-        img_msg->gpu->download(img);
-    } else {
+    // 直接使用 GPU 帧进行 AI 检测
+    if (!img_msg->gpu || img_msg->gpu->empty()) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Empty GpuImage received");
         return;
     }
-    std::vector<Armor> armors = ai_detector_->detect(img, get_parameter("detect_color").as_int());
+    std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, get_parameter("detect_color").as_int());
 
     // 提取from odom to gimbal的坐标系变换
     if (!updateTransform(img_msg->header.frame_id, "odom", img_msg->header.stamp)) {
@@ -230,32 +226,16 @@ void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
     armors_pub_->publish(armors_msg_);
 
     if (debug_) {
-        // draw results
-        drawResults(img_msg->header, img, armors);
+        // draw results（若 cpu_img 为空，则从 GPU 下载一份临时图像供绘制）
+        if (cpu_img.empty() && img_msg->gpu && !img_msg->gpu->empty()) {
+            img_msg->gpu->download(cpu_img);
+        }
+        if (!cpu_img.empty()) {
+            drawResults(img_msg->header, cpu_img, armors);
+        }
         // Publishing marker
         publishMarkers();
     }
-}
-
-
-std::vector<Armor> ArmorDetectorNode::aiDetectArmors(
-    const sensor_msgs::msg::Image::ConstSharedPtr & img_msg, cv::Mat & img)
-{
-    // Convert ROS img to cv::Mat
-    img = cv_bridge::toCvShare(img_msg, "rgb8")->image;
-
-    // 使用 AI 检测器
-    int detect_color = get_parameter("detect_color").as_int();
-    auto armors = ai_detector_->detect(img, detect_color);
-
-    // Publish debug info
-    if (debug_) {
-        //计算延迟
-        auto final_time = this->now();
-        auto latency = (final_time - img_msg->header.stamp).seconds() * 1000;
-        RCLCPP_DEBUG_STREAM(this->get_logger(), "Latency: " << latency << "ms");
-    }
-    return armors;
 }
 
 // ==================== 坐标变换和位姿处理 ====================

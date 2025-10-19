@@ -59,24 +59,6 @@ private:
      */
     void imageCallback(video_reader::GpuImage::UniquePtr img_msg);
 
-    /**
-     * @brief 执行装甲板检测
-     * @param img_msg 输入的图像消息
-     * @param img 输出的OpenCV图像
-     * @return 检测到的装甲板列表
-     */
-    std::vector<Armor> detectArmors(
-        const sensor_msgs::msg::Image::ConstSharedPtr & img_msg, cv::Mat & img);
-
-    /**
-     * @brief 使用AI检测器执行装甲板检测
-     * @param img_msg 输入的图像消息
-     * @param img 输出的OpenCV图像
-     * @return 检测到的装甲板列表
-     */
-    std::vector<Armor> aiDetectArmors(
-        const sensor_msgs::msg::Image::ConstSharedPtr & img_msg, cv::Mat & img);
-
     // -------------------- 坐标变换和位姿处理 --------------------
     /**
      * @brief 更新从odom到相机的坐标变换
