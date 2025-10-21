@@ -263,18 +263,27 @@ void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
 bool ArmorDetectorNode::updateTransform(
     std::string target_frame, std::string source_frame, rclcpp::Time timestamp)
 {
-    try {
+        try {
         auto latest_tf =
             tf2_buffer_->lookupTransform(target_frame, source_frame, tf2::TimePointZero);
         const rclcpp::Time & target_time = timestamp;
         rclcpp::Time latest_time = latest_tf.header.stamp;
+        
+        // 计算并记录时间差
+        double time_diff = (target_time - latest_time).seconds();
+        RCLCPP_DEBUG(this->get_logger(), 
+            "TF time diff: %.3f ms (target: %.6f, latest: %.6f)", 
+            time_diff * 1000, target_time.seconds(), latest_time.seconds());
+        
         // 比较时间戳
         geometry_msgs::msg::TransformStamped odom_to_camera_tf;
         if (target_time > latest_time) {
             // 使用最新变换
             odom_to_camera_tf = latest_tf;
+            RCLCPP_DEBUG(this->get_logger(), "Using latest TF");
         } else {
             // 查找指定时间的变换
+            RCLCPP_DEBUG(this->get_logger(), "Looking up TF at specific time");
             odom_to_camera_tf = tf2_buffer_->lookupTransform(
                 target_frame, source_frame, target_time,
                 rclcpp::Duration::from_nanoseconds(1000000));
@@ -291,8 +300,21 @@ bool ArmorDetectorNode::updateTransform(
             odom_to_camera_tf.transform.translation.x, odom_to_camera_tf.transform.translation.y,
             odom_to_camera_tf.transform.translation.z);
         return 1;
+    } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN(this->get_logger(), 
+            "TF lookup failed: [%s] -> [%s] at time %.6f. Error: %s",
+            source_frame.c_str(), target_frame.c_str(), 
+            timestamp.seconds(), ex.what());
+        return 0;
+    } catch (const std::exception & ex) {
+        RCLCPP_WARN(this->get_logger(), 
+            "Exception in lookupTransform [%s] -> [%s]: %s",
+            source_frame.c_str(), target_frame.c_str(), ex.what());
+        return 0;
     } catch (...) {
-        RCLCPP_ERROR(this->get_logger(), "Something Wrong when lookUpTransform");
+        RCLCPP_WARN(this->get_logger(), 
+            "Unknown error in lookupTransform: [%s] -> [%s] at time %.6f", 
+            source_frame.c_str(), target_frame.c_str(), timestamp.seconds());
         return 0;
     }
 }

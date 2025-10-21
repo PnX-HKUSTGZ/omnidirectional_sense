@@ -5,4 +5,4 @@
 [submodule "src/usb_cam"]
 	path = src/usb_cam
 	url = https://github.com/PnX-HKUSTGZ/usb_cam.git
-	branch = main
+	branch = sentry

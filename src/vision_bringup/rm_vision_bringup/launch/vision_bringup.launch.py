@@ -40,13 +40,13 @@ def generate_launch_description():
             name=name,
             parameters=[usb_cam_shared_params, {
                 'video_device': video_device,
-                'camera_frame_id': frame_id
+                'frame_id': frame_id
             }],
             remappings=remappings or [],
             extra_arguments=[{'use_intra_process_comms': True}]
         )
 
-    def get_camera_detector_container(*nodes, container_name='camera_detector_container'):
+    def get_camera_detector_container(*nodes, container_name='camera_detector_container', delay=2.0):
         node_list = list(nodes)
         workspace_root =os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.join(get_package_share_directory('rm_vision_bringup'))))))
         third_party_lib_path = os.path.join(workspace_root, 'third_party_install', 'lib')
@@ -66,7 +66,7 @@ def generate_launch_description():
             ros_arguments=['--ros-args', ],
         )
         return TimerAction(
-            period=2.0,
+            period=delay,
             actions=[container],
         )
 
@@ -98,7 +98,7 @@ def generate_launch_description():
             ('/camera_info', f'{cam_ns}/camera_info'),
         ]
         cam_image_remaps = [
-            ('/image_raw', f'{cam_ns}/image_gpu'),
+            ('/image_gpu', f'{cam_ns}/image_gpu'),
             ('/camera_info', f'{cam_ns}/camera_info'),
         ]
         detector_remaps = [
@@ -114,14 +114,19 @@ def generate_launch_description():
         if launch_params['video_play']:
             image_node = get_video_reader_node('video_reader', 'video_reader::VideoReaderNode', name=node_name, remappings=image_remaps, frame_id=frame_id, camera_name=f'camera_{i}')
         else:
-            # 使用 usb_cam 节点
             image_node = get_camera_node(cam_id=i, name=cam_node_name, remappings=cam_image_remaps, frame_id=frame_id)
         armor_detector_node = make_armor_detector_node(name=det_name, remappings=detector_remaps)
         container_name = f"camera_detector_container_{i}"
-        cam_detector = get_camera_detector_container(image_node, armor_detector_node, container_name=container_name)
+        # 每个容器之间间隔1秒启动: 第0个在2秒启动,第1个在3秒,第2个在4秒,第3个在5秒
+        container_delay = 2.0 + i * 1.0
+        cam_detector = get_camera_detector_container(image_node, armor_detector_node, container_name=container_name, delay=container_delay)
         
-        # 为每个摄像头创建对应的 robot_state_publisher
-        robot_state_pub = create_robot_state_publisher(i)
+        # 为每个摄像头创建对应的 robot_state_publisher，在对应容器启动前0.5秒启动
+        robot_state_pub_delay = max(0.0, container_delay - 0.5)
+        robot_state_pub = TimerAction(
+            period=robot_state_pub_delay,
+            actions=[create_robot_state_publisher(i)]
+        )
         
         image_nodes.append(image_node)
         detector_nodes.append(armor_detector_node)
@@ -129,8 +134,9 @@ def generate_launch_description():
         robot_state_publishers.append(robot_state_pub)
 
 
+    # 串口节点在最后一个容器启动后1.5秒启动 (2.0 + 3*1.0 + 1.5 = 6.5秒)
     delay_serial_node = TimerAction(
-        period=1.5,
+        period=6.5,
         actions=[serial_driver_node],
     )
 
