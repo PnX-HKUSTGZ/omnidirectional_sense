@@ -31,12 +31,12 @@ video_reader_node = Node(
         node_params
     ],
 )
-recorder_node = Node(
-    package='topic_recorder',
-    executable='topic_recorder_node',
-    name='topic_recorder_node',
-    output='screen',
+serial_driver_node = Node(
+    package='rm_serial_driver',
+    executable='virtual_serial_node',
+    name='virtual_serial',
+    output='both',
     emulate_tty=True,
-    parameters=[{'config_path': os.path.join(
-                                get_package_share_directory('rm_vision_bringup'), 'config', 'topic_record_params.yaml')}],
+    parameters=[node_params],
+    ros_arguments=['--ros-args', '-p', 'has_rune:=true' if launch_params['rune'] else 'has_rune:=false'],
 )

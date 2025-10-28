@@ -31,6 +31,7 @@
 #include "armor_detector/pnp_solver.hpp"
 #include "auto_aim_interfaces/msg/armors.hpp"
 #include "auto_aim_interfaces/srv/set_mode.hpp"
+#include "auto_aim_interfaces/msg/cars.hpp"
 
 namespace rm_auto_aim
 {
@@ -115,7 +116,9 @@ private:
 
     // -------------------- 发布器 --------------------
     auto_aim_interfaces::msg::Armors armors_msg_;
+    auto_aim_interfaces::msg::Cars cars_msg_;
     rclcpp::Publisher<auto_aim_interfaces::msg::Armors>::SharedPtr armors_pub_;
+    rclcpp::Publisher<auto_aim_interfaces::msg::Cars>::SharedPtr cars_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
     // -------------------- 服务 --------------------

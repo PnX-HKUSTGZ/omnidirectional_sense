@@ -6,7 +6,7 @@ sys.path.append(os.path.join(get_package_share_directory('rm_vision_bringup'), '
 
 def generate_launch_description():
 
-    from common import node_params, launch_params, robot_state_publisher, recorder_node
+    from common import node_params, launch_params, robot_state_publisher, serial_driver_node
     from launch_ros.descriptions import ComposableNode
     from launch_ros.actions import ComposableNodeContainer, Node
     from launch.actions import TimerAction, Shutdown
@@ -52,28 +52,6 @@ def generate_launch_description():
             extra_arguments=[{'use_intra_process_comms': True}]
         )
     
-    # 串口
-    if launch_params['virtual_serial']:
-        serial_driver_node = Node(
-            package='rm_serial_driver',
-            executable='virtual_serial_node',
-            name='virtual_serial',
-            output='both',
-            emulate_tty=True,
-            parameters=[node_params],
-            ros_arguments=['--ros-args', '-p', 'has_rune:=true' if launch_params['rune'] else 'has_rune:=false'],
-        )
-    else:
-        serial_driver_node = Node(
-            package='rm_serial_driver',
-            executable='rm_serial_driver_node',
-            name='serial_driver',
-            output='both',
-            emulate_tty=True,
-            parameters=[node_params],
-            ros_arguments=['--ros-args', ],
-        )
-    
     image_nodes = []
     detector_nodes = []
     cam_detectors = []
@@ -92,6 +70,7 @@ def generate_launch_description():
             ('/camera_info', f'{cam_ns}/camera_info'),
             # publications
             ('/detector/armors', f'{cam_ns}/detector/armors'),
+            ('/detector/cars', f'{cam_ns}/detector/cars'),
             ('/detector/marker', f'{cam_ns}/detector/marker'),
             ('/detector/binary_img', f'{cam_ns}/detector/binary_img'),
             ('/detector/number_img', f'{cam_ns}/detector/number_img'),
@@ -116,18 +95,16 @@ def generate_launch_description():
         actions=[serial_driver_node],
     )
 
-    delay_recorder_node = TimerAction(
-        period=2.4,
-        actions=[recorder_node],
-    )
 
-
-    launch_description_list = [
-        robot_state_publisher,
-        *cam_detectors,
-        delay_serial_node,
-    ]
-    if launch_params['enable_recorder']:
-        launch_description_list.append(delay_recorder_node)
+    if launch_params['unit_test']:
+        launch_description_list = [
+            robot_state_publisher,
+            *cam_detectors,
+            delay_serial_node,
+        ]
+    else:
+        launch_description_list = [
+            *cam_detectors,
+        ]
 
     return LaunchDescription(launch_description_list)

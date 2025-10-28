@@ -65,6 +65,10 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
     armors_pub_ = this->create_publisher<auto_aim_interfaces::msg::Armors>(
         "/detector/armors", rclcpp::SensorDataQoS());
 
+    // 初始化Cars Publisher
+    cars_pub_ = this->create_publisher<auto_aim_interfaces::msg::Cars>(
+        "/detector/cars", rclcpp::SensorDataQoS());
+
     //tf2
     tf2_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
@@ -194,6 +198,17 @@ void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
                                         armor_num.first});
         }
     }
+    //填充车辆信息到消息中，发送给控制节点
+    for (auto & car : cars_detected) {
+        auto car_msg = auto_aim_interfaces::msg::Car();
+        car_msg.x = car.x;
+        car_msg.y = car.y;
+        car_msg.z = car.z;
+        car_msg.type = car.type;
+        cars_msg_.cars.emplace_back(car_msg);
+    }
+    cars_msg_.header = img_msg->header;
+    cars_pub_->publish(cars_msg_);
     
     //填充有效装甲板到消息中，发送给调试
     if (debug_) {
