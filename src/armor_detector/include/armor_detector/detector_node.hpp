@@ -134,8 +134,6 @@ private:
     bool debug_;
     std::shared_ptr<rclcpp::ParameterEventHandler> debug_param_sub_;
     std::shared_ptr<rclcpp::ParameterCallbackHandle> debug_cb_handle_;
-    image_transport::Publisher binary_img_pub_;
-    image_transport::Publisher number_img_pub_;
     image_transport::Publisher result_img_pub_;
     
     /**

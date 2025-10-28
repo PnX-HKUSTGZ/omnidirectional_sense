@@ -33,6 +33,9 @@ private:
 
     // 发布模式：cpu | gpu | both
     std::string publish_mode_ = "gpu";
+    
+    // frame_id for camera optical frame
+    std::string frame_id_;
 };
 
 }  // namespace video_reader

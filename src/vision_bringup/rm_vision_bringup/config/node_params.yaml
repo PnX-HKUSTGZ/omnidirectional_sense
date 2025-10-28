@@ -1,14 +1,6 @@
 /video_reader_node:
   ros__parameters:
     camera_info_url: package://rm_vision_bringup/config/camera_info.yaml
-/serial_driver:
-  ros__parameters:
-    timestamp_offset: -0.0025
-    device_name: /dev/ttyACM0
-    baud_rate: 115200
-    flow_control: none
-    parity: none
-    stop_bits: "1"
 /virtual_serial: #虚拟串口
   ros__parameters:
     roll: 0.0
@@ -19,7 +11,7 @@
     has_rune: false
 /armor_detector:
   ros__parameters:
-    debug: false
+    debug: true
     detect_color: 0 #0:red;1:blue
 
     binary_thres: 60

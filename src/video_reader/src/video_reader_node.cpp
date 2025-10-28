@@ -25,9 +25,6 @@ VideoReaderNode::VideoReaderNode(const rclcpp::NodeOptions& options)
         RCLCPP_ERROR(this->get_logger(), "Failed to get FPS from video file");
         rclcpp::shutdown();
     }
-
-    bool use_sensor_data_qos = this->declare_parameter("use_sensor_data_qos", true);
-    auto qos = use_sensor_data_qos ? rmw_qos_profile_sensor_data : rmw_qos_profile_default;
     camera_pub_ = image_transport::CameraPublisher(); // disable image_transport CPU camera publisher
 
     // 发布模式：cpu|gpu|both（默认 cpu）
@@ -48,6 +45,9 @@ VideoReaderNode::VideoReaderNode(const rclcpp::NodeOptions& options)
         RCLCPP_WARN(this->get_logger(), "Invalid camera info URL: %s", camera_info_url.c_str());
     }
 
+    // 从参数读取 frame_id，默认为 camera_optical_frame
+    frame_id_ = this->declare_parameter("frame_id", "camera_optical_frame");
+
     timer_ = this->create_wall_timer(std::chrono::milliseconds(static_cast<int>(1000 / fps)),
                                      std::bind(&VideoReaderNode::timerCallback, this));
 }
@@ -60,7 +60,6 @@ void VideoReaderNode::timerCallback() {
 
         // 时间戳与帧名
         auto stamp = this->now();
-        const char* frame_id = "camera_optical_frame";
 
         if (gpu_pub_) {
             // 上传到 GPU 并以零拷贝对象发布
@@ -73,11 +72,11 @@ void VideoReaderNode::timerCallback() {
             gpu_msg->width = frame.cols;
             gpu_msg->height = frame.rows;
             gpu_msg->step = frame.step;
-            gpu_msg->header.frame_id = frame_id;
+            gpu_msg->header.frame_id = frame_id_;
             gpu_msg->header.stamp = stamp;
 
             gpu_pub_->publish(std::move(gpu_msg));
-            camera_info_msg_.header.frame_id = frame_id;
+            camera_info_msg_.header.frame_id = frame_id_;
             camera_info_msg_.header.stamp = stamp;
             cam_info_pub_->publish(camera_info_msg_);
         }

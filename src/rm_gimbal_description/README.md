@@ -9,11 +9,11 @@ RoboMaster 视觉自瞄系统所需的 URDF
 
 单位和方向请参考 https://www.ros.org/reps/rep-0103.html
 
-odom: 以云台中心为原点的惯性系
+base_link: 以底盘中心为原点的坐标系
 
-gimbal_joint: 描述云台到Odom系旋转关系，包括pitch和yaw，由电控发送获得
+gimbal_joint: 描述大云台到base_link系旋转关系，只包括yaw，由电控发送获得
 
-camera_joint: 表述相机到云台系的变换关系
+camera_joint: 表述相机到大云台系的变换关系
 
 camera_optical_joint: 表述以 z 轴为前方的相机坐标系转换为 x 轴为前方的相机坐标系的旋转关系
 

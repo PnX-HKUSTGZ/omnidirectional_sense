@@ -125,8 +125,8 @@ void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
     }
     std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, get_parameter("detect_color").as_int());
 
-    // 提取from odom to gimbal的坐标系变换
-    if (!updateTransform(img_msg->header.frame_id, "odom", img_msg->header.stamp)) {
+    // 提取from base_link to gimbal的坐标系变换
+    if (!updateTransform(img_msg->header.frame_id, "base_link", img_msg->header.stamp)) {
         return;
     }
 
@@ -393,18 +393,12 @@ void ArmorDetectorNode::createDebugPublishers()
 {
     marker_pub_ =
         this->create_publisher<visualization_msgs::msg::MarkerArray>("/detector/marker", 10);
-
-    binary_img_pub_ = image_transport::create_publisher(this, "/detector/binary_img");
-    number_img_pub_ = image_transport::create_publisher(this, "/detector/number_img");
     result_img_pub_ = image_transport::create_publisher(this, "/detector/result_img");
 }
 
 void ArmorDetectorNode::destroyDebugPublishers()
 {
     marker_pub_.reset();
-
-    binary_img_pub_.shutdown();
-    number_img_pub_.shutdown();
     result_img_pub_.shutdown();
 }
 

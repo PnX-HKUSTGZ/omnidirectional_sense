@@ -1,8 +1,25 @@
 camera: hik
 
-odom2camera:
-  xyz: "\"0.12 0.06  0.04\""
+# 四个摄像头的 TF 参数配置
+# cam0: 前方摄像头
+odom2camera_0:
+  xyz: "\"0.22 0.0  0.40\""
   rpy: "\"0.0 -0.0  0.0\""
+
+# cam1: 右侧摄像头
+odom2camera_1:
+  xyz: "\"0.0 -0.22  0.40\""
+  rpy: "\"0.0 -0.0  -1.5708\""
+
+# cam2: 后方摄像头
+odom2camera_2:
+  xyz: "\"-0.32 -0.0  0.40\""
+  rpy: "\"0.0 -0.0  3.1416\""
+
+# cam3: 左侧摄像头
+odom2camera_3:
+  xyz: "\"-0.0 0.22  0.40\""
+  rpy: "\"0.0 -0.0  1.5708\""
 
 detector_log_level: INFO
 tracker_log_level: INFO

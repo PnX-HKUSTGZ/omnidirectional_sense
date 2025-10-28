@@ -43,7 +43,7 @@ public:
         this->declare_parameter("pitch", 0.0);
         this->declare_parameter("yaw", 0.0);
 
-        transform_stamped_.header.frame_id = "odom";
+        transform_stamped_.header.frame_id = "base_link";
         transform_stamped_.child_frame_id = "gimbal_link";
 
         timer_ = this->create_wall_timer(std::chrono::milliseconds(5), [this]() {
@@ -59,7 +59,7 @@ public:
             tf2::Quaternion q;
             q.setRPY(roll * M_PI / 180.0, -pitch * M_PI / 180.0, yaw * M_PI / 180.0);
             transform_stamped_.transform.rotation = tf2::toMsg(q);
-            transform_stamped_.header.frame_id = "odom";
+            transform_stamped_.header.frame_id = "base_link";
             transform_stamped_.child_frame_id = "gimbal_link";
             // serial_receive_data_msg.mode = mode;
             transform_stamped_.header.stamp = this->now();
@@ -68,7 +68,7 @@ public:
             Eigen::Vector3d rpy = getRPY(q_eigen.toRotationMatrix());
             q.setRPY(rpy[0], 0, 0);
             transform_stamped_.transform.rotation = tf2::toMsg(q);
-            transform_stamped_.header.frame_id = "odom";
+            transform_stamped_.header.frame_id = "base_link";
             transform_stamped_.child_frame_id = "odom_rectify";
             tf_broadcaster_->sendTransform(transform_stamped_);
         });
