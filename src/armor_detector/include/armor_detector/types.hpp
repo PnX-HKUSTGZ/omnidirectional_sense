@@ -259,6 +259,16 @@ struct Armor
         t_camera_armor = r_odom_to_camera * t_odom_armor + t_odom_to_camera;
         r_camera_armor = r_odom_to_camera * r_odom_armor;
     }
+        
+    /**
+     * @brief 设置车辆中心位姿
+     */
+    void setCarPose(double yaw)
+    {
+        x = t_odom_armor(0) + 0.26 * std::cos(yaw);
+        y = t_odom_armor(1) + 0.26 * std::sin(yaw);
+        z = t_odom_armor(2);
+    }
 
     // 灯条对相关
     Light left_light, right_light;  ///< 左右灯条
@@ -277,7 +287,13 @@ struct Armor
     Eigen::Vector3d t_odom_armor;    ///< 里程计坐标系下装甲板位置向量
     Eigen::Matrix3d r_camera_armor;  ///< 相机坐标系下装甲板旋转矩阵
     Eigen::Vector3d t_camera_armor;  ///< 相机坐标系下装甲板位置向量
+    double x, y, z;                  ///< 装甲板对应的车辆中心坐标
 };
+
+struct Car{
+    double x, y, z; 
+    std::string type; 
+}; 
 
 }  // namespace rm_auto_aim
 
