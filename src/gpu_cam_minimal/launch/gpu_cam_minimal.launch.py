@@ -10,12 +10,15 @@ def generate_launch_description():
             name='gpu_cam_minimal',
             output='screen',
             parameters=[{
-                'device_id': 0,
-                'width': 640,
-                'height': 480,
-                'fps': 30,
-                'frame_id': 'camera',
-                'image_topic': 'image_raw'
+                'camera_name': 'default_cam',
+                'camera_info_url': '',
+                'frame_id': 'default_cam',
+                'framerate': 30.0,
+                'image_width': 640,
+                'image_height': 480,
+                'video_device': '/dev/video0',
+                'publish_mode': 'cpu',  # 'cpu' or 'gpu'
+                'pixel_format': 'mjpeg'
             }]
         )
     ])
