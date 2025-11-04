@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>gpu_cam_minimal</name>
+  <version>0.1.0</version>
+  <description>Minimal camera node: capture, upload to GPU (OpenCV CUDA), and publish Image. No format conversion.</description>
+  <maintainer email="dev@example.com">gpu_cam_minimal</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <!-- OpenCV is used for VideoCapture and CUDA upload -->
+  <build_depend>opencv</build_depend>
+  <exec_depend>opencv</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
