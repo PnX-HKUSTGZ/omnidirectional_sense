@@ -19,36 +19,8 @@ set(JETSON_MMAPI_INCLUDE_DIR_ALT "/usr/src/tegra_multimedia_api/include")
 if(EXISTS ${JETSON_MMAPI_INCLUDE_DIR}/NvVideoDecoder.h OR EXISTS ${JETSON_MMAPI_INCLUDE_DIR_ALT}/NvVideoDecoder.h)
   message(STATUS "gpu_cam_minimal: Jetson Multimedia API detected")
   add_definitions(-DGPU_CAM_HAS_JETSON_MMA)
-
-  # Library search paths vary by JetPack/L4T version
-  list(APPEND CMAKE_LIBRARY_PATH
-    /usr/lib/aarch64-linux-gnu/nvidia
-    /usr/lib/aarch64-linux-gnu/tegra
-    /usr/lib/aarch64-linux-gnu
-    /usr/local/cuda/lib64
-  )
-
-  # Core MMAPI libs used by jetson_mjpeg_decoder.cpp
-  find_library(NVBUFSURFACE_LIB nvbufsurface)
-  find_library(NVBUFUTILS_LIB nvbuf_utils)
-  find_library(NVBUFSURFTRANS_LIB nvbufsurftransform)
-  find_library(EGL_LIB EGL)
-  find_library(CUDAEGL_LIB cudaEGL)
-  find_library(CUDART_LIB cudart)
-  find_library(V4L2_LIB v4l2)
-  find_library(PTHREAD_LIB pthread)
-
-  # Link if found; some symbols are in nvbufsurface, nvbuf_utils
-  target_link_libraries(gpu_cam_minimal_node PRIVATE
-    ${NVBUFSURFACE_LIB}
-    ${NVBUFUTILS_LIB}
-    ${NVBUFSURFTRANS_LIB}
-    ${EGL_LIB}
-    ${CUDAEGL_LIB}
-    ${CUDART_LIB}
-    ${V4L2_LIB}
-    ${PTHREAD_LIB}
-  )
+  # Note: If we start using NvBufSurfTransform or NvUtils that require libs,
+  # we may need to link against nvbuf_utils, nvbufsurface, etc.
 endif()
 
 # Try to detect CUDA modules of OpenCV (optional)
@@ -86,7 +58,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../armor_detector/include/armor_detector/g
     ${CMAKE_CURRENT_SOURCE_DIR}/../armor_detector/include)
 endif()
 
-target_link_libraries(gpu_cam_minimal_node PRIVATE ${OpenCV_LIBRARIES})
+target_link_libraries(gpu_cam_minimal_node ${OpenCV_LIBRARIES})
 
 install(TARGETS gpu_cam_minimal_node
   DESTINATION lib/${PROJECT_NAME})
