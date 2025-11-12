@@ -14,9 +14,13 @@ find_package(OpenCV REQUIRED COMPONENTS core videoio)
 
 # Detect Jetson Multimedia API (headers only check)
 set(JETSON_MMAPI_INCLUDE_DIR "/usr/src/jetson_multimedia_api/include")
-if(EXISTS ${JETSON_MMAPI_INCLUDE_DIR}/NvVideoDecoder.h)
+set(JETSON_MMAPI_INCLUDE_DIR_ALT "/usr/src/tegra_multimedia_api/include")
+
+if(EXISTS ${JETSON_MMAPI_INCLUDE_DIR}/NvVideoDecoder.h OR EXISTS ${JETSON_MMAPI_INCLUDE_DIR_ALT}/NvVideoDecoder.h)
   message(STATUS "gpu_cam_minimal: Jetson Multimedia API detected")
   add_definitions(-DGPU_CAM_HAS_JETSON_MMA)
+  # Note: If we start using NvBufSurfTransform or NvUtils that require libs,
+  # we may need to link against nvbuf_utils, nvbufsurface, etc.
 endif()
 
 # Try to detect CUDA modules of OpenCV (optional)
@@ -45,7 +49,7 @@ endif()
 
 ament_target_dependencies(gpu_cam_minimal_node rclcpp sensor_msgs camera_info_manager image_transport cv_bridge)
 
-target_include_directories(gpu_cam_minimal_node PRIVATE ${OpenCV_INCLUDE_DIRS} include ${JETSON_MMAPI_INCLUDE_DIR})
+target_include_directories(gpu_cam_minimal_node PRIVATE ${OpenCV_INCLUDE_DIRS} include ${JETSON_MMAPI_INCLUDE_DIR} ${JETSON_MMAPI_INCLUDE_DIR_ALT})
 
 # Try to include armor_detector headers if available (for GpuImage type)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../armor_detector/include/armor_detector/gpu_image.hpp)

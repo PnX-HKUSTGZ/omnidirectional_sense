@@ -32,11 +32,17 @@ public:
   bool grab_gpu_rgb(...) { return false; }
 #endif
 
+  // Optional stats
+  uint64_t frames_decoded() const { return frames_decoded_; }
+  uint64_t frames_dropped() const { return frames_dropped_; }
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
   bool ready_{false};
   rclcpp::Logger logger_;
+  uint64_t frames_decoded_{0};
+  uint64_t frames_dropped_{0};
 };
 
 } // namespace gpu_cam_minimal
