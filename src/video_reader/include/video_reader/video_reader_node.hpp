@@ -1,7 +1,8 @@
 #ifndef VIDEO_READER__VIDEO_READER_NODE_HPP_
 #define VIDEO_READER__VIDEO_READER_NODE_HPP_
 
-#include "video_reader/gpu_image_type_adapter.hpp"  // include first to expose specialization
+#include "armor_detector/gpu_image_type_adapter.hpp"  // include first to expose specialization
+#include "armor_detector/gpu_image.hpp"
 
 #include <cv_bridge/cv_bridge.h>
 
@@ -10,8 +11,6 @@
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
-
-#include "video_reader/gpu_image.hpp"
 
 namespace video_reader {
 
@@ -24,7 +23,7 @@ private:
 
     cv::VideoCapture cap_;
     image_transport::CameraPublisher camera_pub_;
-    rclcpp::Publisher<GpuImage>::SharedPtr gpu_pub_;
+    rclcpp::Publisher<armor_detector::GpuImage>::SharedPtr gpu_pub_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     std::string camera_name_;

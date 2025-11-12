@@ -8,5 +8,6 @@
     "--completion-style=detailed",
     "--header-insertion=iwyu"
   ],
-  "C_Cpp.intelliSenseEngine": "disabled"
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "cmake.sourceDirectory": "/home/ori/rmvision/omnidirectional_sense/src/armor_detector"
 }

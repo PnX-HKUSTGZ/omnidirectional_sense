@@ -18,8 +18,8 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/header.hpp>
-#include "video_reader/gpu_image_type_adapter.hpp"
-#include "video_reader/gpu_image.hpp"
+#include "armor_detector/gpu_image_type_adapter.hpp"
+#include "armor_detector/gpu_image.hpp"
 
 // STD
 #include <Eigen/Core>
@@ -58,7 +58,7 @@ private:
      * @brief 订阅图像的回调函数，处理图像并进行装甲板检测
      * @param img_msg 输入的图像消息
      */
-    void imageCallback(video_reader::GpuImage::UniquePtr img_msg);
+    void imageCallback(armor_detector::GpuImage::UniquePtr img_msg);
 
     // -------------------- 坐标变换和位姿处理 --------------------
     /**
@@ -109,7 +109,7 @@ private:
 
     // -------------------- 相机相关 --------------------
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_sub_;
-    rclcpp::Subscription<video_reader::GpuImage>::SharedPtr img_sub_;
+    rclcpp::Subscription<armor_detector::GpuImage>::SharedPtr img_sub_;
     cv::Point2f cam_center_;
     std::shared_ptr<sensor_msgs::msg::CameraInfo> cam_info_;
     std::unique_ptr<PnPSolver> pnp_solver_;

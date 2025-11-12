@@ -1,7 +1,7 @@
-#ifndef VIDEO_READER__GPU_IMAGE_TYPE_ADAPTER_HPP_
-#define VIDEO_READER__GPU_IMAGE_TYPE_ADAPTER_HPP_
+#ifndef ARMOR_DETECTOR__GPU_IMAGE_TYPE_ADAPTER_HPP_
+#define ARMOR_DETECTOR__GPU_IMAGE_TYPE_ADAPTER_HPP_
 
-#include "video_reader/gpu_image.hpp"
+#include "armor_detector/gpu_image.hpp"
 
 #include <rclcpp/type_adapter.hpp>
 
@@ -10,11 +10,11 @@
 
 namespace rclcpp {
 
-// 将自定义的 video_reader::GpuImage 与标准 sensor_msgs::msg::Image 互转
+// 将自定义的 armor_detector::GpuImage 与标准 sensor_msgs::msg::Image 互转
 template<>
-struct TypeAdapter<video_reader::GpuImage, sensor_msgs::msg::Image> {
+struct TypeAdapter<armor_detector::GpuImage, sensor_msgs::msg::Image> {
   using is_specialized = std::true_type;
-  using custom_type = video_reader::GpuImage;
+  using custom_type = armor_detector::GpuImage;
   using ros_message_type = sensor_msgs::msg::Image;
 
   static void convert_to_ros_message(const custom_type & src, ros_message_type & dst) {
@@ -48,11 +48,11 @@ struct TypeAdapter<video_reader::GpuImage, sensor_msgs::msg::Image> {
 }  // namespace rclcpp
 
 // 声明：允许直接将自定义类型作为 ROS 类型使用（用于 Publisher/Subscription 模板参数）
-RCLCPP_USING_CUSTOM_TYPE_AS_ROS_MESSAGE_TYPE(video_reader::GpuImage, sensor_msgs::msg::Image);
+RCLCPP_USING_CUSTOM_TYPE_AS_ROS_MESSAGE_TYPE(armor_detector::GpuImage, sensor_msgs::msg::Image);
 
-namespace video_reader {
+namespace armor_detector {
 // 可选别名：并非必须
-using GpuImageAdapter = rclcpp::TypeAdapter<video_reader::GpuImage, sensor_msgs::msg::Image>;
+using GpuImageAdapter = rclcpp::TypeAdapter<armor_detector::GpuImage, sensor_msgs::msg::Image>;
 }
 
-#endif  // VIDEO_READER__GPU_IMAGE_TYPE_ADAPTER_HPP_
+#endif  // ARMOR_DETECTOR__GPU_IMAGE_TYPE_ADAPTER_HPP_

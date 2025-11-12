@@ -1,5 +1,5 @@
-#ifndef VIDEO_READER__GPU_IMAGE_HPP_
-#define VIDEO_READER__GPU_IMAGE_HPP_
+#ifndef ARMOR_DETECTOR__GPU_IMAGE_HPP_
+#define ARMOR_DETECTOR__GPU_IMAGE_HPP_
 
 #include <memory>
 #include <string>
@@ -8,7 +8,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/header.hpp>
 
-namespace video_reader {
+namespace armor_detector {
 
 // 轻量封装：将 GPU 图像数据与必要元数据打包
 struct GpuImage {
@@ -27,6 +27,6 @@ struct GpuImage {
   void* stream{nullptr};
 };
 
-}  // namespace video_reader
+}  // namespace armor_detector
 
-#endif  // VIDEO_READER__GPU_IMAGE_HPP_
+#endif  // ARMOR_DETECTOR__GPU_IMAGE_HPP_

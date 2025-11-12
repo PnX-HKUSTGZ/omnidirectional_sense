@@ -16,6 +16,7 @@
   <depend>ament_index_cpp</depend>
   <depend>vision_opencv</depend>
   <depend>rclcpp_components</depend>
+  <depend>armor_detector</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

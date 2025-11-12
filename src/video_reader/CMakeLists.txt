@@ -47,6 +47,9 @@ target_link_libraries(${PROJECT_NAME}
     ${camera_info_manager_LIBRARIES}
 )
 
+# 依赖 armor_detector 的头文件（提供 GpuImage/TypeAdapter）
+ament_target_dependencies(${PROJECT_NAME} armor_detector)
+
 rclcpp_components_register_node(${PROJECT_NAME}
     PLUGIN video_reader::VideoReaderNode
     EXECUTABLE ${PROJECT_NAME}_node

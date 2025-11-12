@@ -1,7 +1,4 @@
 #include "video_reader/video_reader_node.hpp"
-
-#include "video_reader/gpu_image_type_adapter.hpp"  // NOLINT: ensure adapter is compiled
-
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 namespace video_reader {
@@ -29,7 +26,7 @@ VideoReaderNode::VideoReaderNode(const rclcpp::NodeOptions& options)
 
     // 发布模式：cpu|gpu|both（默认 cpu）
     publish_mode_ = this->declare_parameter<std::string>("publish_mode", "gpu");
-    gpu_pub_ = this->create_publisher<GpuImage>("/image_gpu", rclcpp::SensorDataQoS());
+    gpu_pub_ = this->create_publisher<armor_detector::GpuImage>("/image_gpu", rclcpp::SensorDataQoS());
     cam_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/camera_info", rclcpp::SensorDataQoS());
 
     // Load camera info
@@ -66,7 +63,7 @@ void VideoReaderNode::timerCallback() {
             auto g = std::make_shared<cv::cuda::GpuMat>();
             g->upload(frame);
 
-            auto gpu_msg = std::make_unique<GpuImage>();
+            auto gpu_msg = std::make_unique<armor_detector::GpuImage>();
             gpu_msg->gpu = std::move(g);
             gpu_msg->encoding = "rgb8";
             gpu_msg->width = frame.cols;

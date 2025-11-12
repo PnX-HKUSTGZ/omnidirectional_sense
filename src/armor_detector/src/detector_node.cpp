@@ -57,7 +57,7 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
         });
 
     // 订阅 GPU 图像，使用同进程零拷贝
-    img_sub_ = this->create_subscription<video_reader::GpuImage>(
+    img_sub_ = this->create_subscription<armor_detector::GpuImage>(
         "/image_gpu", rclcpp::SensorDataQoS(),
         std::bind(&ArmorDetectorNode::imageCallback, this, std::placeholders::_1));
 
@@ -111,7 +111,7 @@ std::unique_ptr<AIDetector> ArmorDetectorNode::initAIDetector()
 }
 
 // ==================== 核心处理功能 ====================
-void ArmorDetectorNode::imageCallback(video_reader::GpuImage::UniquePtr img_msg)
+void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_msg)
 {
     // 如果当前模式为打符模式，不进行装甲板检测
     if (!enable_) {
