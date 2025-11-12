@@ -12,6 +12,13 @@ find_package(image_transport REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core videoio)
 
+# Detect Jetson Multimedia API (headers only check)
+set(JETSON_MMAPI_INCLUDE_DIR "/usr/src/jetson_multimedia_api/include")
+if(EXISTS ${JETSON_MMAPI_INCLUDE_DIR}/NvVideoDecoder.h)
+  message(STATUS "gpu_cam_minimal: Jetson Multimedia API detected")
+  add_definitions(-DGPU_CAM_HAS_JETSON_MMA)
+endif()
+
 # Try to detect CUDA modules of OpenCV (optional)
 set(HAVE_OPENCV_CUDA OFF)
 if(GPU_CAM_USE_CUDA)
@@ -27,7 +34,10 @@ if(GPU_CAM_USE_CUDA)
   endif()
 endif()
 
-add_executable(gpu_cam_minimal_node src/gpu_cam_minimal_node.cpp)
+add_executable(gpu_cam_minimal_node
+  src/gpu_cam_minimal_node.cpp
+  src/jetson_mjpeg_decoder.cpp
+)
 
 if(HAVE_OPENCV_CUDA)
   target_compile_definitions(gpu_cam_minimal_node PRIVATE GPU_CAM_HAS_OPENCV_CUDA=1)
@@ -35,13 +45,13 @@ endif()
 
 ament_target_dependencies(gpu_cam_minimal_node rclcpp sensor_msgs camera_info_manager image_transport cv_bridge)
 
-target_include_directories(gpu_cam_minimal_node PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_include_directories(gpu_cam_minimal_node PRIVATE ${OpenCV_INCLUDE_DIRS} include ${JETSON_MMAPI_INCLUDE_DIR})
 
-# Try to include video_reader headers if available (optional)
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../video_reader/include/video_reader/gpu_image.hpp)
-  message(STATUS "gpu_cam_minimal: found local video_reader includes")
+# Try to include armor_detector headers if available (for GpuImage type)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../armor_detector/include/armor_detector/gpu_image.hpp)
+  message(STATUS "gpu_cam_minimal: found armor_detector includes")
   target_include_directories(gpu_cam_minimal_node PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../video_reader/include)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../armor_detector/include)
 endif()
 
 target_link_libraries(gpu_cam_minimal_node ${OpenCV_LIBRARIES})
