@@ -3,6 +3,8 @@
 #include <vector>
 #include <thread>
 #include <cstring>
+#include <unistd.h>
+
 
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
@@ -14,6 +16,8 @@
 #include <cudaEGL.h>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/cudaimgproc.hpp>
+#include <nvbufsurface.h>
+#include <nvbufsurftransform.h>
 
 namespace gpu_cam_minimal {
 
@@ -52,7 +56,7 @@ struct NvdecMjpegDecoder::Impl {
 };
 
 NvdecMjpegDecoder::NvdecMjpegDecoder() : impl_(new Impl) {}
-NvdecMjpegDecoder::~NvdecMjpegDecoder() { close(); }
+NvdecMjpegDecoder::~NvdecMjpegDecoder() { close_decoder(); }
 
 bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int height, double fps)
 {
@@ -72,7 +76,7 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
   // 创建 Jetson 硬件解码器
   impl_->dec = NvVideoDecoder::createVideoDecoder("dec0");
   if (!impl_->dec) {
-    close();
+    close_decoder();
     return false;
   }
   impl_->dec->subscribeEvent(V4L2_EVENT_RESOLUTION_CHANGE, 0, 0);
@@ -88,11 +92,11 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
   // 初始化 EGL 显示
   impl_->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
   if (impl_->egl_display == EGL_NO_DISPLAY) {
-    close();
+    close_decoder();
     return false;
   }
   if (!eglInitialize(impl_->egl_display, nullptr, nullptr)) {
-    close();
+    close_decoder();
     return false;
   }
 
@@ -105,64 +109,73 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
 
 bool NvdecMjpegDecoder::read_bgr(cv::cuda::GpuMat& out_bgr)
 {
-  if (!impl_->opened) return false;
+    if (impl_->v4l2_fd < 0 || !impl_->dec) return false;
 
-  // 读取一帧编码 MJPEG
-  int len = -1;
-  for (int tries = 0; tries < 10; ++tries) {
-    len = ::read(impl_->v4l2_fd, impl_->enc_buf.data(), impl_->enc_buf.size());
-    if (len > 0) break;
-    if (len < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
-    } else if (len < 0) {
-      return false;
+    // ---- 1. 从 V4L2 读取 MJPEG 编码帧 ----
+    ssize_t len = ::read(impl_->v4l2_fd, impl_->enc_buf.data(), impl_->enc_buf.size());
+    if (len <= 0) return false;
+
+    // ---- 2. 投喂到 NvVideoDecoder output plane ----
+    struct v4l2_buffer v4l2_buf{};
+    struct v4l2_plane planes[VIDEO_MAX_PLANES]{};
+    v4l2_buf.m.planes = planes;
+
+    NvBuffer* nvbuf = impl_->dec->output_plane.getNthBuffer(0);
+    if (!nvbuf) return false;
+
+    std::memcpy(nvbuf->planes[0].data, impl_->enc_buf.data(), static_cast<size_t>(len));
+    v4l2_buf.m.planes[0].bytesused = len;
+
+    if (impl_->dec->output_plane.qBuffer(v4l2_buf, nullptr) < 0)
+        return false;
+
+    // ---- 3. 从 capture plane 取出解码后的帧 ----
+    if (impl_->dec->capture_plane.dqBuffer(v4l2_buf, &nvbuf, nullptr, 1000) != 0)
+        return false;
+
+    // ---- 4. 映射为 EGLImage ----
+    NvBufSurface* surf = reinterpret_cast<NvBufSurface*>(nvbuf);
+    if (NvBufSurfaceMapEglImage(surf, 0) != 0) {
+        return false;
     }
-  }
-  if (len <= 0) return false;
 
-  // 投喂到解码器
-  struct v4l2_buffer v4l2_buf{};
-  struct v4l2_plane planes[VIDEO_MAX_PLANES]{};
-  v4l2_buf.m.planes = planes;
-  NvBuffer * nvbuf = impl_->dec->output_plane.getNthBuffer(0);
-  if (!nvbuf) return false;
-  std::memcpy(nvbuf->planes[0].data, impl_->enc_buf.data(), static_cast<size_t>(len));
-  v4l2_buf.m.planes[0].bytesused = len;
-  if (impl_->dec->output_plane.qBuffer(v4l2_buf, nullptr) < 0) return false;
+    EGLImageKHR egl_image = surf->surfaceList[0].mappedAddr.eglImage;
 
-  // 取出解码后帧
-  if (impl_->dec->capture_plane.dqBuffer(v4l2_buf, &nvbuf, nullptr, 1000) != 0) return false;
-  int dmabuf_fd = nvbuf->planes[0].fd;
 
-  // DMABUF -> EGL -> CUDA
-  EGLImageKHR egl_image = NvEGLImageFromFd(impl_->egl_display, dmabuf_fd);
-  if (egl_image == EGL_NO_IMAGE_KHR) return false;
+    // ---- 5. 注册到 CUDA 并获取 CUeglFrame ----
+    CUgraphicsResource cuda_resource{};
+    if (cuGraphicsEGLRegisterImage(&cuda_resource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE) != CUDA_SUCCESS) {
+        NvBufSurfaceUnMapEglImage(surf, 0);
+        return false;
+    }
 
-  CUgraphicsResource cuda_resource{};
-  if (cuGraphicsEGLRegisterImage(&cuda_resource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE) != CUDA_SUCCESS) {
-    NvDestroyEGLImage(impl_->egl_display, egl_image);
-    return false;
-  }
-  CUeglFrame eglFrame{};
-  if (cuGraphicsResourceGetMappedEglFrame(&eglFrame, cuda_resource, 0, 0) != CUDA_SUCCESS) {
+    CUeglFrame eglFrame{};
+    if (cuGraphicsResourceGetMappedEglFrame(&eglFrame, cuda_resource, 0, 0) != CUDA_SUCCESS) {
+        cuGraphicsUnregisterResource(cuda_resource);
+        NvBufSurfaceUnMapEglImage(surf, 0);
+        return false;
+    }
+
+    // ---- 6. 从 CUeglFrame 构造 NV12 并转换 BGR ----
+    cv::cuda::GpuMat y(impl_->height, impl_->width, CV_8UC1, eglFrame.frame.pPitch[0]);
+    cv::cuda::GpuMat uv(impl_->height / 2, impl_->width / 2, CV_8UC2, eglFrame.frame.pPitch[1]);
+
+    cv::cuda::GpuMat nv12(impl_->height * 3 / 2, impl_->width, CV_8UC1);
+    y.copyTo(nv12.rowRange(0, impl_->height));
+    uv.copyTo(nv12.rowRange(impl_->height, impl_->height * 3 / 2));
+
+    cv::cuda::cvtColor(nv12, out_bgr, cv::COLOR_YUV2BGR_NV12);
+
+    // ---- 7. 清理 ----
     cuGraphicsUnregisterResource(cuda_resource);
-    NvDestroyEGLImage(impl_->egl_display, egl_image);
-    return false;
-  }
+    NvBufSurfaceUnMapEglImage(surf, 0);
+    // NvBufSurfaceDestroy(surf); // 如果 surf 是 capture plane buffer，不需要 destroy
 
-  // 构造 GpuMat 并转换 NV12 -> BGR
-  cv::cuda::GpuMat y(impl_->height, impl_->width, CV_8UC1, eglFrame.frame.pPitch[0]);
-  cv::cuda::GpuMat uv(impl_->height / 2, impl_->width / 2, CV_8UC2, eglFrame.frame.pPitch[1]);
-  cv::cuda::cvtColorTwoPlane(y, uv, out_bgr, cv::COLOR_YUV2BGR_NV12);
-
-  cuGraphicsUnregisterResource(cuda_resource);
-  NvDestroyEGLImage(impl_->egl_display, egl_image);
-
-  return !out_bgr.empty();
+    return !out_bgr.empty();
 }
 
-void NvdecMjpegDecoder::close()
+
+void NvdecMjpegDecoder::close_decoder()
 {
   if (!impl_->opened) return;
   if (impl_->dec) {

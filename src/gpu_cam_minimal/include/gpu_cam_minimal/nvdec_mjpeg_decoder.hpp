@@ -24,7 +24,7 @@ public:
   bool read_bgr(cv::cuda::GpuMat& out_bgr);
 
   // 关闭资源。
-  void close();
+  void close_decoder();
 
   bool is_open() const;
 
