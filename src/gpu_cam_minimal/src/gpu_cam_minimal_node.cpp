@@ -29,15 +29,15 @@ public:
   : Node("gpu_cam_minimal")
   {
     // Parameters
-    camera_name_ = this->declare_parameter<std::string>("camera_name", "default_cam");
+    camera_name_ = this->declare_parameter<std::string>("camera_name", "cam_0");
     camera_info_url_ = this->declare_parameter<std::string>("camera_info_url", "");
-    frame_id_ = this->declare_parameter<std::string>("frame_id", "default_cam");
+    frame_id_ = this->declare_parameter<std::string>("frame_id", "cam_0");
     framerate_ = this->declare_parameter<double>("framerate", 30.0);
     image_width_ = this->declare_parameter<int>("image_width", 640);
     image_height_ = this->declare_parameter<int>("image_height", 480);
     video_device_ = this->declare_parameter<std::string>("video_device", "/dev/video0");
-  publish_mode_ = this->declare_parameter<std::string>("publish_mode", "cpu"); // cpu|gpu
-  pixel_format_ = this->declare_parameter<std::string>("pixel_format", "mjpeg"); // only mjpeg supported
+    publish_mode_ = this->declare_parameter<std::string>("publish_mode", "cpu"); // cpu|gpu
+    pixel_format_ = this->declare_parameter<std::string>("pixel_format", "mjpeg"); // only mjpeg supported
 
     // Publishers to match usb_cam external topics
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", rclcpp::SensorDataQoS());
@@ -136,6 +136,7 @@ private:
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "NVDEC read/decode failed");
             return;
       }
+      std::cerr << "Decoded frame size: " << gpu_bgr.cols << "x" << gpu_bgr.rows << std::endl;
     } 
     else {
       if (!cap_.read(frame)) {

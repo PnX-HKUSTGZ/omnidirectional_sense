@@ -28,7 +28,9 @@ find_library(OPENCV_CUDAWARPING_LIB opencv_cudawarping)
 find_library(OPENCV_CUDAIMGPROC_LIB opencv_cudaimgproc)
 
 # Jetson/NVDEC libraries (from Rules.mk)
-set(NVLIBS_DIR /usr/lib/aarch64-linux-gnu/nvidia /usr/lib/aarch64-linux-gnu/tegra /usr/lib/aarch64-linux-gnu)
+set(NVLIBS_DIR /usr/lib/aarch64-linux-gnu/nvidia 
+               /usr/lib/aarch64-linux-gnu/tegra
+               /usr/lib/aarch64-linux-gnu)
 find_library(LIB_V4L2 v4l2)
 find_library(LIB_EGL EGL)
 find_library(LIB_GLESv2 GLESv2)
@@ -143,8 +145,8 @@ install(TARGETS ${PROJECT_NAME}_node
 )
 
 # Install shared resources if present
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/docs OR EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/config)
-  install(DIRECTORY docs config
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/docs OR EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/config OR EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/launch)
+  install(DIRECTORY docs config launch
     DESTINATION share/${PROJECT_NAME}
     OPTIONAL
   )
@@ -153,6 +155,10 @@ endif()
 target_compile_options(${PROJECT_NAME}_node PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-w>   # 屏蔽 CUDA 文件编译器警告
     $<$<COMPILE_LANGUAGE:CXX>:-isystem /usr/src/jetson_multimedia_api/include -w>
+)
+
+set_target_properties(gpu_cam_minimal_node PROPERTIES
+    CUDA_ARCHITECTURES "87"
 )
 
 ament_auto_package()

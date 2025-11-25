@@ -10,14 +10,14 @@ def generate_launch_description():
             name='gpu_cam_minimal',
             output='screen',
             parameters=[{
-                'camera_name': 'default_cam',
-                'camera_info_url': '',
-                'frame_id': 'default_cam',
+                'camera_name': 'cam_0',
+                'camera_info_url': 'file:///home/ori/rmvision/omnidirectional_sense/src/gpu_cam_minimal/config/camera_info.yaml',
+                'frame_id': 'cam_0',
                 'framerate': 30.0,
-                'image_width': 640,
-                'image_height': 480,
+                'image_width': 1920,
+                'image_height': 1080,
                 'video_device': '/dev/video0',
-                'publish_mode': 'cpu',  # 'cpu' or 'gpu'
+                'publish_mode': 'gpu',  # 'cpu' or 'gpu'
                 'pixel_format': 'mjpeg'
             }]
         )
