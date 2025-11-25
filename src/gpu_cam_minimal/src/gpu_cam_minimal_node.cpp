@@ -4,6 +4,11 @@
 #include <vector>
 #include <thread>
 #include <cstring>
+#include <cerrno>
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -40,6 +45,19 @@ public:
     publish_mode_ = this->declare_parameter<std::string>("publish_mode", "cpu"); // cpu|gpu
     pixel_format_ = this->declare_parameter<std::string>("pixel_format", "mjpeg"); // only mjpeg supported
     debug_enabled_ = this->declare_parameter<bool>("debug", false);
+    control_params_.brightness = this->declare_parameter<int>("brightness", 0);
+    control_params_.contrast = this->declare_parameter<int>("contrast", 32);
+    control_params_.saturation = this->declare_parameter<int>("saturation", 64);
+    control_params_.hue = this->declare_parameter<int>("hue", 0);
+    control_params_.white_balance_automatic = this->declare_parameter<bool>("white_balance_automatic", true);
+    control_params_.gamma = this->declare_parameter<int>("gamma", 300);
+    control_params_.gain = this->declare_parameter<int>("gain", 32);
+    control_params_.power_line_frequency = this->declare_parameter<int>("power_line_frequency", 1);
+    control_params_.white_balance_temperature = this->declare_parameter<int>("white_balance_temperature", 4600);
+    control_params_.sharpness = this->declare_parameter<int>("sharpness", 32);
+    control_params_.backlight_compensation = this->declare_parameter<int>("backlight_compensation", 0);
+    control_params_.auto_exposure = this->declare_parameter<int>("auto_exposure", 3);
+    control_params_.exposure_time_absolute = this->declare_parameter<int>("exposure_time_absolute", 313);
 
     // Publishers to match usb_cam external topics
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", rclcpp::SensorDataQoS());
@@ -53,8 +71,9 @@ public:
       debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("debug_image_raw", rclcpp::SensorDataQoS());
     }
 
-  // Open camera (may choose HW MJPEG decode path on Jetson)
-  openCamera();
+    apply_camera_controls();
+    // Open camera (may choose HW MJPEG decode path on Jetson)
+    openCamera();
 
     // Timer at ~fps
     auto period_ms = (framerate_ > 0.0) ? static_cast<int>(1000.0 / framerate_) : 33; // default ~30fps
@@ -127,6 +146,56 @@ private:
       ci.height = static_cast<uint32_t>(image_height_);
       cinfo_mgr_->setCameraInfo(ci);
     }
+  }
+
+  void apply_camera_controls()
+  {
+    int fd = ::open(video_device_.c_str(), O_RDWR);
+    if (fd < 0) {
+      RCLCPP_WARN(get_logger(), "Failed to open %s for V4L2 control setup: %s",
+                  video_device_.c_str(), std::strerror(errno));
+      return;
+    }
+
+    auto set_ctrl = [&](const char * name, int control_id, int value) {
+      v4l2_control ctrl{};
+      ctrl.id = control_id;
+      ctrl.value = value;
+      if (::ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        if (errno == EINVAL || errno == ENOTTY) {
+          RCLCPP_DEBUG(get_logger(), "Control %s not supported: %s", name, std::strerror(errno));
+        } else {
+          RCLCPP_WARN(get_logger(), "Failed to set %s to %d: %s", name, value, std::strerror(errno));
+        }
+        return false;
+      }
+      return true;
+    };
+
+    set_ctrl("brightness", V4L2_CID_BRIGHTNESS, control_params_.brightness);
+    set_ctrl("contrast", V4L2_CID_CONTRAST, control_params_.contrast);
+    set_ctrl("saturation", V4L2_CID_SATURATION, control_params_.saturation);
+    set_ctrl("hue", V4L2_CID_HUE, control_params_.hue);
+    set_ctrl("white_balance_automatic", V4L2_CID_AUTO_WHITE_BALANCE,
+             control_params_.white_balance_automatic ? 1 : 0);
+    if (!control_params_.white_balance_automatic) {
+      set_ctrl("white_balance_temperature", V4L2_CID_WHITE_BALANCE_TEMPERATURE,
+               control_params_.white_balance_temperature);
+    }
+    set_ctrl("gamma", V4L2_CID_GAMMA, control_params_.gamma);
+    set_ctrl("gain", V4L2_CID_GAIN, control_params_.gain);
+    set_ctrl("power_line_frequency", V4L2_CID_POWER_LINE_FREQUENCY,
+             control_params_.power_line_frequency);
+    set_ctrl("sharpness", V4L2_CID_SHARPNESS, control_params_.sharpness);
+    set_ctrl("backlight_compensation", V4L2_CID_BACKLIGHT_COMPENSATION,
+             control_params_.backlight_compensation);
+    set_ctrl("auto_exposure", V4L2_CID_EXPOSURE_AUTO, control_params_.auto_exposure);
+    if (control_params_.auto_exposure == V4L2_EXPOSURE_MANUAL) {
+      set_ctrl("exposure_time_absolute", V4L2_CID_EXPOSURE_ABSOLUTE,
+               control_params_.exposure_time_absolute);
+    }
+
+    ::close(fd);
   }
 
   void tick()
@@ -254,6 +323,21 @@ private:
   std::string publish_mode_;
   std::string pixel_format_;
   bool debug_enabled_ {false};
+  struct CameraControlParams {
+    int brightness {0};
+    int contrast {32};
+    int saturation {64};
+    int hue {0};
+    bool white_balance_automatic {true};
+    int gamma {300};
+    int gain {32};
+    int power_line_frequency {1};
+    int white_balance_temperature {4600};
+    int sharpness {32};
+    int backlight_compensation {0};
+    int auto_exposure {V4L2_EXPOSURE_APERTURE_PRIORITY};
+    int exposure_time_absolute {313};
+  } control_params_;
   // Publishers
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_pub_;
