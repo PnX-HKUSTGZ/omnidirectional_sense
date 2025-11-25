@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <thread>
+#include <mutex>
 #include <cstring>
 #include <unistd.h>
 
@@ -17,6 +18,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <NvVideoDecoder.h>
+#include <cuda.h>
 #include <cudaEGL.h>
 #include "NvUtils.h"
 #include <stdarg.h>
@@ -31,6 +33,79 @@
 #include "gpu_cam_minimal/yuv2rgb.cuh"
 
 namespace gpu_cam_minimal {
+
+namespace {
+
+bool ensure_cuda_initialized()
+{
+    static std::once_flag init_flag;
+    static bool initialized = false;
+    static CUresult init_result = CUDA_ERROR_NOT_INITIALIZED;
+    std::call_once(init_flag, []() {
+        init_result = cuInit(0);
+        initialized = (init_result == CUDA_SUCCESS);
+    });
+    if (!initialized) {
+        const char* err_name = nullptr;
+        const char* err_str = nullptr;
+        (void)cuGetErrorName(init_result, &err_name);
+        (void)cuGetErrorString(init_result, &err_str);
+        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "cuInit failed: %s (%s)",
+                                err_name ? err_name : "UNKNOWN",
+                                err_str ? err_str : "no description");
+    }
+    return initialized;
+}
+
+bool ensure_cuda_context()
+{
+    if (!ensure_cuda_initialized()) {
+        return false;
+    }
+
+    CUcontext current = nullptr;
+    CUresult get_result = cuCtxGetCurrent(&current);
+    if (get_result == CUDA_SUCCESS && current != nullptr) {
+        return true;
+    }
+
+    static std::once_flag ctx_flag;
+    static CUcontext shared_ctx = nullptr;
+    static CUresult ctx_result = CUDA_ERROR_NOT_INITIALIZED;
+    std::call_once(ctx_flag, []() {
+        CUdevice dev{};
+        ctx_result = cuDeviceGet(&dev, 0);
+        if (ctx_result == CUDA_SUCCESS) {
+            ctx_result = cuCtxCreate(&shared_ctx, CU_CTX_SCHED_AUTO, dev);
+        }
+    });
+    if (ctx_result != CUDA_SUCCESS || shared_ctx == nullptr) {
+        const char* err_name = nullptr;
+        const char* err_str = nullptr;
+        (void)cuGetErrorName(ctx_result, &err_name);
+        (void)cuGetErrorString(ctx_result, &err_str);
+        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to create CUDA context: %s (%s)",
+                                err_name ? err_name : "UNKNOWN",
+                                err_str ? err_str : "no description");
+        return false;
+    }
+
+    CUresult set_result = cuCtxSetCurrent(shared_ctx);
+    if (set_result != CUDA_SUCCESS) {
+        const char* err_name = nullptr;
+        const char* err_str = nullptr;
+        (void)cuGetErrorName(set_result, &err_name);
+        (void)cuGetErrorString(set_result, &err_str);
+        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "cuCtxSetCurrent failed: %s (%s)",
+                                err_name ? err_name : "UNKNOWN",
+                                err_str ? err_str : "no description");
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace
 
 
 // 简单的 JPEG 帧边界检测（FFD8 = SOI, FFD9 = EOI）
@@ -392,8 +467,6 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
         return false;
     }
     int queued_fd = get_capture_dmabuf_fd(out_cbuf.index);
-    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Num capture buffers: %u", dec->capture_plane.getNumBuffers());
-    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Capture buffer index %u uses DMABUF FD %d", out_cbuf.index, queued_fd);
 
     return true;
 }
@@ -407,7 +480,6 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_b
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Invalid DMABUF fd for capture buffer %u", cbuf.index);
         return false;
     }
-    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Using DMABUF FD %d for capture buffer %u", dmabuf_fd, cbuf.index);
 
     NvBufSurface* nvbuf_surf = nullptr;
     if (NvBufSurfaceFromFd(dmabuf_fd, reinterpret_cast<void**>(&nvbuf_surf)) != 0 || nvbuf_surf == nullptr) {
@@ -440,9 +512,27 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_b
         return false;
     }
 
+    if (!ensure_cuda_context()) {
+        eglDestroyImageKHR(egl_display, egl_image);
+        unmap_egl_image();
+        (void)requeue_capture_buffer(cbuf);
+        return false;
+    }
+
     CUgraphicsResource cuda_resource{};
-    if (cuGraphicsEGLRegisterImage(&cuda_resource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE) != CUDA_SUCCESS) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to register EGLImage to CUDA.");
+    CUresult reg_result = cuGraphicsEGLRegisterImage(&cuda_resource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
+    if (reg_result != CUDA_SUCCESS) {
+        const char* err_name = nullptr;
+        const char* err_desc = nullptr;
+        (void)cuGetErrorName(reg_result, &err_name);
+        (void)cuGetErrorString(reg_result, &err_desc);
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder",
+                               "Failed to register EGLImage to CUDA (dmabuf_fd=%d, EGLImage=%p, CUresult=%d: %s - %s)",
+                               dmabuf_fd,
+                               static_cast<void*>(egl_image),
+                               static_cast<int>(reg_result),
+                               err_name ? err_name : "UNKNOWN",
+                               err_desc ? err_desc : "no description");
         eglDestroyImageKHR(egl_display, egl_image);
         unmap_egl_image();
         (void)requeue_capture_buffer(cbuf);
@@ -471,11 +561,6 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_b
 
         if (eglFrame.frameType != CU_EGL_FRAME_TYPE_PITCH) {
             RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Unexpected CUeglFrame type %d (expected PITCH)", static_cast<int>(eglFrame.frameType));
-            break;
-        }
-
-        if (eglFrame.numPlanes < 3) {
-            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "CUeglFrame reported %d planes; need 3 for YUV422M", eglFrame.numPlanes);
             break;
         }
 
@@ -677,6 +762,11 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
 
     impl_->enc_buf.resize(2 * 1024 * 1024);
     impl_->capture_configured = false;
+    impl_->capture_num_planes = 0;
+    impl_->capture_pixfmt = 0;
+    impl_->dec_w = 0;
+    impl_->dec_h = 0;
+    impl_->frames_fed = 0;
     impl_->out_next_idx = 0;
     impl_->out_in_use[0] = false;
     impl_->out_in_use[1] = false;
@@ -741,44 +831,62 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb)
 
 void NvdecMjpegDecoder::close_decoder()
 {
-  if (!impl_->opened) return;
-    // 先停止 V4L2 streaming 并释放映射
-    if (impl_->v4l2_fd >= 0 && impl_->v4l2_streaming) {
-        v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    (void)v4l2_ioctl(impl_->v4l2_fd, VIDIOC_STREAMOFF, &type);
-        for (auto &b : impl_->v4l2_bufs) {
-            if (b.start && b.length) {
-                munmap(b.start, b.length);
-            }
-        }
-        impl_->v4l2_bufs.clear();
-        impl_->v4l2_streaming = false;
+    if (!impl_->opened) {
+        return;
     }
-  if (impl_->dec) {
-    // NvVideoDecoder 无显式 destroy API；依照样例通常让进程回收。
-    // 在此尽量停止流并释放 fd。
-    try {
-      impl_->dec->output_plane.setStreamStatus(false);
-      impl_->dec->capture_plane.setStreamStatus(false);
-    } catch(...) {}
-  }
+
+    if (impl_->dec) {
+        impl_->dec->abort();
+
+        impl_->dec->capture_plane.setStreamStatus(false);
+        impl_->dec->capture_plane.deinitPlane();
+
+        impl_->dec->output_plane.setStreamStatus(false);
+        impl_->dec->output_plane.deinitPlane();
+
+        delete impl_->dec;
+        impl_->dec = nullptr;
+    }
+
     for (int fd : impl_->capture_dmabuf_fds) {
-        if (fd > 0) {
+        if (fd >= 0) {
             NvBufSurf::NvDestroy(fd);
         }
     }
     impl_->capture_dmabuf_fds.clear();
+    impl_->capture_configured = false;
     impl_->capture_num_buffers = 0;
     impl_->capture_num_planes = 0;
-  if (impl_->v4l2_fd >= 0) {
-    ::close(impl_->v4l2_fd);
-    impl_->v4l2_fd = -1;
-  }
-  if (impl_->egl_display != EGL_NO_DISPLAY) {
-    eglTerminate(impl_->egl_display);
-    impl_->egl_display = EGL_NO_DISPLAY;
-  }
-  impl_->opened = false;
+    impl_->capture_pixfmt = 0;
+    impl_->dec_w = 0;
+    impl_->dec_h = 0;
+    impl_->frames_fed = 0;
+    impl_->out_in_use[0] = impl_->out_in_use[1] = false;
+
+    if (impl_->egl_display != EGL_NO_DISPLAY) {
+        eglTerminate(impl_->egl_display);
+        impl_->egl_display = EGL_NO_DISPLAY;
+    }
+
+    if (impl_->v4l2_streaming && impl_->v4l2_fd >= 0) {
+        v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        (void)v4l2_ioctl(impl_->v4l2_fd, VIDIOC_STREAMOFF, &type);
+        impl_->v4l2_streaming = false;
+    }
+
+    for (auto &buf : impl_->v4l2_bufs) {
+        if (buf.start && buf.length) {
+            munmap(buf.start, buf.length);
+        }
+    }
+    impl_->v4l2_bufs.clear();
+
+    if (impl_->v4l2_fd >= 0) {
+        ::close(impl_->v4l2_fd);
+        impl_->v4l2_fd = -1;
+    }
+
+    impl_->opened = false;
 }
 
 bool NvdecMjpegDecoder::is_open() const { return impl_->opened; }

@@ -39,6 +39,7 @@ public:
     video_device_ = this->declare_parameter<std::string>("video_device", "/dev/video0");
     publish_mode_ = this->declare_parameter<std::string>("publish_mode", "cpu"); // cpu|gpu
     pixel_format_ = this->declare_parameter<std::string>("pixel_format", "mjpeg"); // only mjpeg supported
+    debug_enabled_ = this->declare_parameter<bool>("debug", false);
 
     // Publishers to match usb_cam external topics
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", rclcpp::SensorDataQoS());
@@ -47,6 +48,9 @@ public:
     if (publish_mode_ == "gpu") {
       gpu_image_pub_ = this->create_publisher<armor_detector::GpuImage>("/image_gpu", rclcpp::SensorDataQoS());
       gpu_cam_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/camera_info", rclcpp::SensorDataQoS());
+    }
+    if (debug_enabled_) {
+      debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("debug_image_raw", rclcpp::SensorDataQoS());
     }
 
   // Open camera (may choose HW MJPEG decode path on Jetson)
@@ -127,17 +131,19 @@ private:
 
   void tick()
   {
+    rclcpp::Time timestamp;
     cv::Mat frame_bgr;
     cv::Mat frame_rgb_cpu;
     cv::cuda::GpuMat gpu_rgb;
 
     if (use_hw_mjpeg_) {
+      timestamp = this->now();
       if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "NVDEC read/decode failed");
         return;
       }
-      std::cerr << "Decoded frame size: " << gpu_rgb.cols << "x" << gpu_rgb.rows << std::endl;
     } else {
+      timestamp = this->now();
       if (!cap_.read(frame_bgr)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed to read frame");
         return;
@@ -163,8 +169,31 @@ private:
 
     // Prepare camera info
     auto ci = cinfo_mgr_->getCameraInfo();
-    ci.header.stamp = this->now();
+    ci.header.stamp = timestamp;
     ci.header.frame_id = frame_id_;
+
+    auto publish_debug_if_requested = [&](const sensor_msgs::msg::CameraInfo & info) {
+      if (!debug_enabled_ || !debug_image_pub_ || gpu_rgb.empty()) {
+        return;
+      }
+      cv::Mat debug_cpu;
+      gpu_rgb.download(debug_cpu);
+      if (debug_cpu.empty()) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Debug RGB download failed");
+        return;
+      }
+      sensor_msgs::msg::Image debug_msg;
+      debug_msg.header = info.header;
+      debug_msg.encoding = "rgb8";
+      debug_msg.is_bigendian = false;
+      debug_msg.height = static_cast<uint32_t>(debug_cpu.rows);
+      debug_msg.width = static_cast<uint32_t>(debug_cpu.cols);
+      debug_msg.step = static_cast<uint32_t>(debug_cpu.step);
+      size_t debug_size = debug_cpu.total() * debug_cpu.elemSize();
+      debug_msg.data.resize(debug_size);
+      std::memcpy(debug_msg.data.data(), debug_cpu.data, debug_size);
+      debug_image_pub_->publish(debug_msg);
+    };
 
     if ((publish_mode_ == "gpu" || publish_mode_ == "gpu_hw") && gpu_image_pub_) {
       // Publish GPU image with type adapter; no conversions
@@ -179,6 +208,7 @@ private:
       if (gpu_cam_info_pub_) {
         gpu_cam_info_pub_->publish(ci);
       }
+      publish_debug_if_requested(ci);
       return;
     }
 
@@ -209,6 +239,7 @@ private:
 
     image_pub_->publish(msg);
     cam_info_pub_->publish(ci);
+    publish_debug_if_requested(ci);
   }
 
 private:
@@ -222,12 +253,14 @@ private:
   std::string video_device_;
   std::string publish_mode_;
   std::string pixel_format_;
+  bool debug_enabled_ {false};
   // Publishers
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_pub_;
   // GPU publishers only when armor_detector GPU message is available
   rclcpp::Publisher<armor_detector::GpuImage>::SharedPtr gpu_image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr gpu_cam_info_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   cv::VideoCapture cap_;

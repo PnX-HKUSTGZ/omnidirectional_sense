@@ -1,5 +1,5 @@
 #include <cuda_runtime.h>
-#include "yuv2rgb.cuh"
+#include "gpu_cam_minimal/yuv2rgb.cuh"
 
 __device__ inline float clamp(float val, float mn, float mx)
 {

@@ -18,7 +18,8 @@ def generate_launch_description():
                 'image_height': 1080,
                 'video_device': '/dev/video0',
                 'publish_mode': 'gpu',  # 'cpu' or 'gpu'
-                'pixel_format': 'mjpeg'
+                'pixel_format': 'mjpeg', 
+                'debug': True,
             }]
         )
     ])

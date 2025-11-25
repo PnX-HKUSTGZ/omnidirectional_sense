@@ -84,6 +84,7 @@ check_include_file_cxx("opencv2/core/cuda.hpp" HAVE_OPENCV_CUDA)
 set(PROJECT_SOURCES
   src/${PROJECT_NAME}_node.cpp
   src/nvdec_mjpeg_decoder.cpp
+  src/yuv2rgb.cu
 )
 add_executable(${PROJECT_NAME}_node ${PROJECT_SOURCES} ${NV_CLASSES_SRC} ${NV_CUDA_SRC})
 
