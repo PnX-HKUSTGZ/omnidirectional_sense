@@ -6,10 +6,11 @@ sys.path.append(os.path.join(get_package_share_directory('rm_vision_bringup'), '
 
 def generate_launch_description():
 
-    from common import launch_params, create_robot_state_publisher, serial_driver_node, video_reader_shared_params, armor_detector_shared_params, usb_cam_shared_params
+    from common import (launch_params, create_robot_state_publisher, serial_driver_node,
+                        video_reader_shared_params, armor_detector_shared_params, gpu_cam_shared_params)
     from launch_ros.descriptions import ComposableNode
     from launch_ros.actions import ComposableNodeContainer, Node
-    from launch.actions import TimerAction, Shutdown
+    from launch.actions import TimerAction
     from launch import LaunchDescription
     
     # 从配置文件读取相机设备映射
@@ -31,17 +32,20 @@ def generate_launch_description():
             extra_arguments=[{'use_intra_process_comms': True}]
         )
     
-    def get_camera_node(cam_id, name='usb_cam_node', remappings=None, frame_id='camera_optical_frame'):
-        """创建 usb_cam 节点"""
+    def get_gpu_cam_node(cam_id, name='gpu_cam_node', remappings=None,
+                         frame_id='camera_optical_frame', camera_name='camera'):
+        """创建 gpu_cam_minimal 节点"""
         video_device = camera_devices.get(cam_id, '/dev/video0')
+        per_cam_params = {
+            'video_device': video_device,
+            'frame_id': frame_id,
+            'camera_name': camera_name,
+        }
         return ComposableNode(
-            package='usb_cam',
-            plugin='usb_cam::UsbCamNode',
+            package='gpu_cam_minimal',
+            plugin='GpuCamMinimalNode',
             name=name,
-            parameters=[usb_cam_shared_params, {
-                'video_device': video_device,
-                'frame_id': frame_id
-            }],
+            parameters=[gpu_cam_shared_params, per_cam_params],
             remappings=remappings or [],
             extra_arguments=[{'use_intra_process_comms': True}]
         )
@@ -88,11 +92,12 @@ def generate_launch_description():
     
     for i in range(4):
         node_name = f"video_reader_node_{i}"
-        cam_node_name = f"usb_cam_node_{i}"
+        cam_node_name = f"gpu_cam_node_{i}"
         det_name = f"armor_detector_{i}"
         # Per-instance topic remappings
         cam_ns = f"/cam{i}"
-        frame_id = f"camera_{i}_optical_frame"  # 每个摄像头的独立 frame_id
+        camera_name = f"camera_{i}"
+        frame_id = f"{camera_name}_optical_frame"  # 每个摄像头的独立 frame_id
         image_remaps = [
             ('/image_gpu', f'{cam_ns}/image_gpu'),
             ('/camera_info', f'{cam_ns}/camera_info'),
@@ -112,9 +117,13 @@ def generate_launch_description():
             ('/detector/result_img', f'{cam_ns}/detector/result_img'),
         ]
         if launch_params['video_play']:
-            image_node = get_video_reader_node('video_reader', 'video_reader::VideoReaderNode', name=node_name, remappings=image_remaps, frame_id=frame_id, camera_name=f'camera_{i}')
+            image_node = get_video_reader_node('video_reader', 'video_reader::VideoReaderNode',
+                                               name=node_name, remappings=image_remaps,
+                                               frame_id=frame_id, camera_name=camera_name)
         else:
-            image_node = get_camera_node(cam_id=i, name=cam_node_name, remappings=cam_image_remaps, frame_id=frame_id)
+            image_node = get_gpu_cam_node(cam_id=i, name=cam_node_name,
+                                          remappings=cam_image_remaps, frame_id=frame_id,
+                                          camera_name=camera_name)
         armor_detector_node = make_armor_detector_node(name=det_name, remappings=detector_remaps)
         container_name = f"camera_detector_container_{i}"
         # 每个容器之间间隔1秒启动: 第0个在2秒启动,第1个在3秒,第2个在4秒,第3个在5秒

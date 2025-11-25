@@ -25,10 +25,10 @@ def _extract(params, key):
             return v['ros__parameters']
     return {}
 
-# 共享参数:video_reader 和 armor_detector(其他节点可按需添加)
+# 共享参数: video_reader / armor_detector / gpu_cam_minimal (其他节点可按需添加)
 video_reader_shared_params = _extract(_raw_node_params, 'video_reader_node')
 armor_detector_shared_params = _extract(_raw_node_params, 'armor_detector')
-usb_cam_shared_params = _extract(_raw_node_params, 'usb_cam_node')
+gpu_cam_shared_params = _extract(_raw_node_params, 'gpu_cam_minimal')
 
 # 为每个摄像头创建独立的 robot_state_publisher
 # 所有摄像头共享 base_link 和 gimbal_link，但各自有独立的 camera_link
