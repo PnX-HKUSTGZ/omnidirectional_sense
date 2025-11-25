@@ -27,6 +27,7 @@
 #include <nvbufsurftransform.h>
 #include <rcutils/logging_macros.h>
 #include <NvBuffer.h>
+#include "NvBufSurface.h"
 
 namespace gpu_cam_minimal {
 
@@ -56,6 +57,10 @@ struct NvdecMjpegDecoder::Impl {
     bool capture_configured{false};
     int dec_w{0};
     int dec_h{0};
+    int capture_num_planes{0};
+    uint32_t capture_num_buffers{0};
+    v4l2_plane_pix_format capture_plane_fmts[VIDEO_MAX_PLANES]{};
+    std::vector<int> capture_dmabuf_fds;
     int out_next_idx{0};
     bool out_in_use[2]{false, false};
     int frames_fed{0}; // 已喂给 NVDEC 的输出帧数量，用于无事件回退策略
@@ -85,6 +90,10 @@ struct NvdecMjpegDecoder::Impl {
     bool feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vbuf, const void* data, size_t len,
                                          NvBuffer*& out_cap_nvbuf, v4l2_buffer &out_cbuf);
     bool convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_bgr);
+    bool prepare_capture_dmabuf_buffer(v4l2_buffer &cbuf);
+    NvBufSurfaceColorFormat resolve_capture_color_format(uint32_t pixfmt) const;
+    bool requeue_capture_buffer(v4l2_buffer &cbuf);
+    int get_capture_dmabuf_fd(uint32_t index) const;
 
     static bool set_v4l2_mjpeg(int fd, int w, int h, double f)
     {
@@ -142,6 +151,67 @@ bool NvdecMjpegDecoder::Impl::grab_camera_frame(v4l2_buffer &out_vbuf, void*& ou
         return false;
     }
     return true;
+}
+
+NvBufSurfaceColorFormat NvdecMjpegDecoder::Impl::resolve_capture_color_format(uint32_t pixfmt) const
+{
+    switch (pixfmt) {
+        case V4L2_PIX_FMT_YUV420:
+        case V4L2_PIX_FMT_YUV420M:
+            return NVBUF_COLOR_FORMAT_YUV420;
+        case V4L2_PIX_FMT_YUV422M:
+        case V4L2_PIX_FMT_YUYV:
+            return NVBUF_COLOR_FORMAT_YUV422;
+        case V4L2_PIX_FMT_NV12:
+        case V4L2_PIX_FMT_NV12M:
+            return NVBUF_COLOR_FORMAT_NV12;
+        case V4L2_PIX_FMT_NV24:
+        case V4L2_PIX_FMT_NV24M:
+            return NVBUF_COLOR_FORMAT_NV24;
+        default:
+            return NVBUF_COLOR_FORMAT_NV12;
+    }
+}
+
+bool NvdecMjpegDecoder::Impl::prepare_capture_dmabuf_buffer(v4l2_buffer &cbuf)
+{
+    if (capture_dmabuf_fds.empty()) {
+        return false;
+    }
+    if (cbuf.index >= capture_dmabuf_fds.size()) {
+        return false;
+    }
+
+    cbuf.length = static_cast<uint32_t>(capture_num_planes);
+    for (int p = 0; p < capture_num_planes && p < VIDEO_MAX_PLANES; ++p) {
+        cbuf.m.planes[p].m.fd = capture_dmabuf_fds[cbuf.index];
+        cbuf.m.planes[p].bytesused = 0;
+        cbuf.m.planes[p].data_offset = 0;
+        cbuf.m.planes[p].length = capture_plane_fmts[p].sizeimage;
+    }
+    return true;
+}
+
+bool NvdecMjpegDecoder::Impl::requeue_capture_buffer(v4l2_buffer &cbuf)
+{
+    if (!prepare_capture_dmabuf_buffer(cbuf)) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to prepare capture buffer %u for requeue", cbuf.index);
+        return false;
+    }
+
+    if (dec->capture_plane.qBuffer(cbuf, nullptr) < 0) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to requeue capture buffer index %u", cbuf.index);
+        return false;
+    }
+    return true;
+}
+
+int NvdecMjpegDecoder::Impl::get_capture_dmabuf_fd(uint32_t index) const
+{
+    if (capture_dmabuf_fds.empty() || index >= capture_dmabuf_fds.size()) {
+        return -1;
+    }
+    return capture_dmabuf_fds[index];
 }
 
 // Helper: feed compressed JPEG data into NVDEC output plane, configure capture plane if needed,
@@ -250,6 +320,7 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
         dec_w = static_cast<int>(format.fmt.pix_mp.width);
         dec_h = static_cast<int>(format.fmt.pix_mp.height);
         capture_pixfmt = format.fmt.pix_mp.pixelformat;
+        capture_num_planes = static_cast<int>(format.fmt.pix_mp.num_planes);
         RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Decoder resolution finalized: %dx%d, pixfmt=0x%08x", dec_w, dec_h, capture_pixfmt);
 
         int32_t min_bufs = 0;
@@ -258,9 +329,24 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
             return false;
         }
 
-        // FIX 1: Change V4L2_MEMORY_DMABUF to V4L2_MEMORY_MMAP
-        if (dec->capture_plane.setupPlane(V4L2_MEMORY_MMAP, min_bufs + 2, true, false) < 0) {
-            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "capture_plane.setupPlane failed");
+        capture_num_buffers = static_cast<uint32_t>(min_bufs + 2);
+        capture_dmabuf_fds.assign(capture_num_buffers, -1);
+
+        NvBufSurf::NvCommonAllocateParams cap_params{};
+        cap_params.memType = NVBUF_MEM_SURFACE_ARRAY;
+        cap_params.width = static_cast<uint32_t>(dec_w);
+        cap_params.height = static_cast<uint32_t>(dec_h);
+        cap_params.layout = NVBUF_LAYOUT_PITCH;
+        cap_params.colorFormat = resolve_capture_color_format(capture_pixfmt);
+        cap_params.memtag = NvBufSurfaceTag_VIDEO_DEC;
+
+        if (NvBufSurf::NvAllocate(&cap_params, capture_num_buffers, capture_dmabuf_fds.data()) < 0) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "NvBufSurf::NvAllocate failed for capture plane");
+            return false;
+        }
+
+        if (dec->capture_plane.reqbufs(V4L2_MEMORY_DMABUF, capture_num_buffers) < 0) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "capture_plane.reqbufs failed");
             return false;
         }
 
@@ -269,26 +355,28 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
             return false;
         }
 
-        for (uint32_t i = 0; i < dec->capture_plane.getNumBuffers(); ++i) {
-            v4l2_buffer cbuf{}; 
-            v4l2_plane cplanes[VIDEO_MAX_PLANES]{}; 
+        for (auto &fmt : capture_plane_fmts) {
+            std::memset(&fmt, 0, sizeof(fmt));
+        }
+
+        for (int p = 0; p < capture_num_planes && p < VIDEO_MAX_PLANES; ++p) {
+            capture_plane_fmts[p] = format.fmt.pix_mp.plane_fmt[p];
+        }
+
+        for (uint32_t i = 0; i < capture_num_buffers; ++i) {
+            v4l2_buffer cbuf{};
+            v4l2_plane cplanes[VIDEO_MAX_PLANES]{};
             cbuf.m.planes = cplanes;
             cbuf.index = i;
             cbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-            
-            // FIX 2: Match the memory type here as well
-            cbuf.memory = V4L2_MEMORY_MMAP; 
+            cbuf.memory = V4L2_MEMORY_DMABUF;
 
-            // In MMAP mode, the driver manages the memory, but we still get the NvBuffer wrapper
-            // to pass into qBuffer for internal state tracking.
-            NvBuffer* nvbuf = dec->capture_plane.getNthBuffer(i); 
-            if (!nvbuf) {
-                RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to get NvBuffer %u", i);
+            if (!prepare_capture_dmabuf_buffer(cbuf)) {
+                RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to prepare capture buffer %u", i);
                 return false;
             }
 
-            // qBuffer will now work because the driver has allocated memory for this index
-            if (dec->capture_plane.qBuffer(cbuf, nvbuf) < 0) {
+            if (dec->capture_plane.qBuffer(cbuf, nullptr) < 0) {
                 RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "capture_plane.qBuffer failed");
                 return false;
             }
@@ -302,6 +390,9 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Timeout or failure dequeuing from capture plane.");
         return false;
     }
+    int queued_fd = get_capture_dmabuf_fd(out_cbuf.index);
+    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Num capture buffers: %u", dec->capture_plane.getNumBuffers());
+    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Capture buffer index %u uses DMABUF FD %d", out_cbuf.index, queued_fd);
 
     return true;
 }
@@ -309,62 +400,41 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
 // Helper: convert a captured NvBuffer to CUDA GpuMat (and into out_bgr). Handles EGL/CUDA registration and color conversion.
 bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_bgr)
 {
-    
-    int dmabuf_fd = dec->capture_plane.exportBuffer(cbuf.index);
+    int dmabuf_fd = get_capture_dmabuf_fd(cbuf.index);
     if (dmabuf_fd < 0) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to export DMABUF for buffer %u", cbuf.index);
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Invalid DMABUF fd for capture buffer %u", cbuf.index);
         return false;
     }
-    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Exported DMABUF FD: %d", dmabuf_fd);
-    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder",
-                       "Plane0 fd=%d, Plane1 fd=%d", 
-                       cap_nvbuf->planes[0].fd, cap_nvbuf->planes[1].fd);
+    RCUTILS_LOG_INFO_NAMED("nvdec_mjpeg_decoder", "Using DMABUF FD %d for capture buffer %u", dmabuf_fd, cbuf.index);
 
+    NvBufSurface* nvbuf_surf = nullptr;
+    if (NvBufSurfaceFromFd(dmabuf_fd, reinterpret_cast<void**>(&nvbuf_surf)) != 0 || nvbuf_surf == nullptr) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "NvBufSurfaceFromFd failed for fd=%d", dmabuf_fd);
+        return false;
+    }
+    if (!nvbuf_surf->surfaceList || nvbuf_surf->batchSize == 0) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "NvBufSurfaceFromFd returned empty surface for fd=%d", dmabuf_fd);
+        return false;
+    }
 
-// === JetPack 6 replacement for NvEGLImageFromFd ===
-    // Query plane info from V4L2 buffer
-    // cap_nvbuf: NvBufSurface*
-    NvBuffer::NvBufferPlane &Y  = cap_nvbuf->planes[0];
-    NvBuffer::NvBufferPlane &UV = cap_nvbuf->planes[1];
+    if (NvBufSurfaceMapEglImage(nvbuf_surf, 0) != 0) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "NvBufSurfaceMapEglImage failed for fd=%d", dmabuf_fd);
+        return false;
+    }
 
-    // pitch/stride is in the plane format
-    uint32_t pitchY  = Y.fmt.stride;      // bytes per line for Y
-    uint32_t pitchUV = UV.fmt.stride;     // bytes per line for UV (often same as Y)
-    // offset from data pointer:
-    uint32_t offsetY  = Y.mem_offset;
-    uint32_t offsetUV = UV.mem_offset;
-
-    int fd = Y.fd; // usually the dmabuf fd for the exported buffer
-
-    EGLint attrs[] = {
-        EGL_WIDTH,  dec_w,
-        EGL_HEIGHT, dec_h,
-
-        EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
-
-        EGL_DMA_BUF_PLANE0_FD_EXT,     fd,
-        EGL_DMA_BUF_PLANE0_OFFSET_EXT, static_cast<EGLint>(offsetY),
-        EGL_DMA_BUF_PLANE0_PITCH_EXT,  static_cast<EGLint>(pitchY),
-
-        EGL_DMA_BUF_PLANE1_FD_EXT,     fd,
-        EGL_DMA_BUF_PLANE1_OFFSET_EXT, static_cast<EGLint>(offsetUV),
-        EGL_DMA_BUF_PLANE1_PITCH_EXT,  static_cast<EGLint>(pitchUV),
-
-        EGL_NONE
+    const auto unmap_egl_image = [nvbuf_surf]() {
+        if (nvbuf_surf) {
+            NvBufSurfaceUnMapEglImage(nvbuf_surf, 0);
+        }
     };
 
-    EGLImageKHR egl_image = eglCreateImageKHR(
-        egl_display,
-        EGL_NO_CONTEXT,
-        EGL_LINUX_DMA_BUF_EXT,
-        nullptr,
-        attrs
-    );
+    EGLImageKHR egl_image = static_cast<EGLImageKHR>(nvbuf_surf->surfaceList[0].mappedAddr.eglImage);
 
     if (egl_image == EGL_NO_IMAGE_KHR) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder",
                                "eglCreateImageKHR(NV12) failed for dmabuf_fd=%d", dmabuf_fd);
-        dec->capture_plane.qBuffer(cbuf, nullptr);
+        unmap_egl_image();
+        (void)requeue_capture_buffer(cbuf);
         return false;
     }
 
@@ -372,7 +442,8 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
     if (cuGraphicsEGLRegisterImage(&cuda_resource, egl_image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE) != CUDA_SUCCESS) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to register EGLImage to CUDA.");
         eglDestroyImageKHR(egl_display, egl_image);
-        dec->capture_plane.qBuffer(cbuf, nullptr);
+        unmap_egl_image();
+        (void)requeue_capture_buffer(cbuf);
         return false;
     }
 
@@ -381,7 +452,8 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to map CUeglFrame from EGLImage.");
         cuGraphicsUnregisterResource(cuda_resource);
         eglDestroyImageKHR(egl_display, egl_image);
-        dec->capture_plane.qBuffer(cbuf, nullptr);
+        unmap_egl_image();
+        (void)requeue_capture_buffer(cbuf);
         return false;
     }
 
@@ -412,26 +484,63 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
             RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor I420->RGBA failed: %s", e.what());
             cuGraphicsUnregisterResource(cuda_resource);
             eglDestroyImageKHR(egl_display, egl_image);
-            dec->capture_plane.qBuffer(cbuf, nullptr);
+            unmap_egl_image();
+            (void)requeue_capture_buffer(cbuf);
             return false;
         }
-    } else if (capture_pixfmt == V4L2_PIX_FMT_YUV422M || capture_pixfmt == V4L2_PIX_FMT_YUYV) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "YUV422 capture format detected; using NV12-style fallback to RGBA");
+    } else if (capture_pixfmt == V4L2_PIX_FMT_YUV422M) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "YUV422M to RGBA conversion via CUDA is not directly supported; performing manual conversion.");
         void* pY = eglFrame.frame.pPitch[0];
-        void* pUV = eglFrame.frame.pPitch[1];
+        void* pU = eglFrame.frame.pPitch[1];
+        void* pV = eglFrame.frame.pPitch[2];
         size_t pitch = eglFrame.pitch;
+
         cv::cuda::GpuMat y(H, W, CV_8UC1, pY, pitch);
-        cv::cuda::GpuMat uv(H / 2, W / 2, CV_8UC2, pUV, pitch);
-        cv::cuda::GpuMat nv12(H * 3 / 2, W, CV_8UC1);
-        y.copyTo(nv12.rowRange(0, H));
-        uv.copyTo(nv12.rowRange(H, H * 3 / 2));
+        cv::cuda::GpuMat u_full(H, W / 2, CV_8UC1, pU, pitch);
+        cv::cuda::GpuMat v_full(H, W / 2, CV_8UC1, pV, pitch);
+
+        cv::cuda::GpuMat u_half, v_half;
         try {
-            cv::cuda::cvtColor(nv12, out_bgr, cv::COLOR_YUV2RGBA_NV12);
+            cv::cuda::resize(u_full, u_half, cv::Size(W / 2, H / 2), 0.0, 0.0, cv::INTER_LINEAR);
+            cv::cuda::resize(v_full, v_half, cv::Size(W / 2, H / 2), 0.0, 0.0, cv::INTER_LINEAR);
         } catch (const cv::Exception& e) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor NV12->RGBA failed for YUV422 fallback: %s", e.what());
+            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA resize on YUV422 planes failed: %s", e.what());
             cuGraphicsUnregisterResource(cuda_resource);
             eglDestroyImageKHR(egl_display, egl_image);
-            dec->capture_plane.qBuffer(cbuf, nullptr);
+            unmap_egl_image();
+            (void)requeue_capture_buffer(cbuf);
+            return false;
+        }
+
+        cv::cuda::GpuMat i420(H * 3 / 2, W, CV_8UC1);
+        y.copyTo(i420.rowRange(0, H));
+        cv::cuda::GpuMat dstU = i420.rowRange(H, H + H / 2).colRange(0, W / 2);
+        cv::cuda::GpuMat dstV = i420.rowRange(H + H / 2, H * 3 / 2).colRange(0, W / 2);
+        u_half.copyTo(dstU);
+        v_half.copyTo(dstV);
+
+        try {
+            cv::cuda::cvtColor(i420, out_bgr, cv::COLOR_YUV2RGBA_I420);
+        } catch (const cv::Exception& e) {
+            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor I420->RGBA failed for YUV422 planar: %s", e.what());
+            cuGraphicsUnregisterResource(cuda_resource);
+            eglDestroyImageKHR(egl_display, egl_image);
+            unmap_egl_image();
+            (void)requeue_capture_buffer(cbuf);
+            return false;
+        }
+    } else if (capture_pixfmt == V4L2_PIX_FMT_YUYV) {
+        void* pYUYV = eglFrame.frame.pPitch[0];
+        size_t pitch = eglFrame.pitch;
+        cv::cuda::GpuMat yuyv(H, W, CV_8UC2, pYUYV, pitch);
+        try {
+            cv::cuda::cvtColor(yuyv, out_bgr, cv::COLOR_YUV2RGBA_YUY2);
+        } catch (const cv::Exception& e) {
+            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor YUY2->RGBA failed: %s", e.what());
+            cuGraphicsUnregisterResource(cuda_resource);
+            eglDestroyImageKHR(egl_display, egl_image);
+            unmap_egl_image();
+            (void)requeue_capture_buffer(cbuf);
             return false;
         }
     } else {
@@ -449,7 +558,8 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
             RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor NV12->RGBA failed: %s", e.what());
             cuGraphicsUnregisterResource(cuda_resource);
             eglDestroyImageKHR(egl_display, egl_image);
-            dec->capture_plane.qBuffer(cbuf, nullptr);
+            unmap_egl_image();
+            (void)requeue_capture_buffer(cbuf);
             return false;
         }
     }
@@ -457,10 +567,11 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
     // cleanup
     cuGraphicsUnregisterResource(cuda_resource);
     eglDestroyImageKHR(egl_display, egl_image);
+    unmap_egl_image();
 
     // requeue capture buffer
-    if (dec->capture_plane.qBuffer(cbuf, nullptr) < 0) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to requeue capture buffer");
+    if (!requeue_capture_buffer(cbuf)) {
+        return false;
     }
 
     return true;
@@ -686,6 +797,14 @@ void NvdecMjpegDecoder::close_decoder()
       impl_->dec->capture_plane.setStreamStatus(false);
     } catch(...) {}
   }
+    for (int fd : impl_->capture_dmabuf_fds) {
+        if (fd > 0) {
+            NvBufSurf::NvDestroy(fd);
+        }
+    }
+    impl_->capture_dmabuf_fds.clear();
+    impl_->capture_num_buffers = 0;
+    impl_->capture_num_planes = 0;
   if (impl_->v4l2_fd >= 0) {
     ::close(impl_->v4l2_fd);
     impl_->v4l2_fd = -1;
