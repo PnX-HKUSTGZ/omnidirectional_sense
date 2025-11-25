@@ -97,10 +97,10 @@ static inline dim3 make_block()
     return dim3(16, 16, 1);
 }
 
-// NOTE: simple non-resize BGR->RGB kernel and its launcher removed as unused.
+// NOTE: simple non-resize conversion kernel removed as unused.
 
-// Fused resize + BGR->RGB + normalize to NCHW FP16
-__global__ void resize_bgr8_to_rgb_nchw_fp16_kernel(const unsigned char* __restrict__ src,
+// Fused resize + RGB normalization to NCHW FP16 (source already RGB8)
+__global__ void resize_rgb8_to_rgb_nchw_fp16_kernel(const unsigned char* __restrict__ src,
                                                     size_t src_pitch,
                                                     int srcW, int srcH,
                                                     __half* __restrict__ dst,
@@ -127,33 +127,33 @@ __global__ void resize_bgr8_to_rgb_nchw_fp16_kernel(const unsigned char* __restr
     const unsigned char* row0 = src + y0 * src_pitch;
     const unsigned char* row1 = src + y1 * src_pitch;
 
-    // read 4 neighbors (BGR)
+    // read 4 neighbors (RGB)
     const unsigned char* p00 = row0 + x0 * 3;
     const unsigned char* p10 = row0 + x1 * 3;
     const unsigned char* p01 = row1 + x0 * 3;
     const unsigned char* p11 = row1 + x1 * 3;
 
-    float b00 = static_cast<float>(p00[0]);
+    float r00 = static_cast<float>(p00[0]);
     float g00 = static_cast<float>(p00[1]);
-    float r00 = static_cast<float>(p00[2]);
-    float b10 = static_cast<float>(p10[0]);
+    float b00 = static_cast<float>(p00[2]);
+    float r10 = static_cast<float>(p10[0]);
     float g10 = static_cast<float>(p10[1]);
-    float r10 = static_cast<float>(p10[2]);
-    float b01 = static_cast<float>(p01[0]);
+    float b10 = static_cast<float>(p10[2]);
+    float r01 = static_cast<float>(p01[0]);
     float g01 = static_cast<float>(p01[1]);
-    float r01 = static_cast<float>(p01[2]);
-    float b11 = static_cast<float>(p11[0]);
+    float b01 = static_cast<float>(p01[2]);
+    float r11 = static_cast<float>(p11[0]);
     float g11 = static_cast<float>(p11[1]);
-    float r11 = static_cast<float>(p11[2]);
+    float b11 = static_cast<float>(p11[2]);
 
     // bilinear interpolate
     float w00 = (1 - dx) * (1 - dy);
     float w10 = dx * (1 - dy);
     float w01 = (1 - dx) * dy;
     float w11 = dx * dy;
-    float bf = (b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11) * (1.f/255.f);
-    float gf = (g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11) * (1.f/255.f);
     float rf = (r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11) * (1.f/255.f);
+    float gf = (g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11) * (1.f/255.f);
+    float bf = (b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11) * (1.f/255.f);
 
     int HW = dstW * dstH;
     int base = y * dstW + x;
@@ -162,14 +162,14 @@ __global__ void resize_bgr8_to_rgb_nchw_fp16_kernel(const unsigned char* __restr
     dst[2 * HW + base] = __float2half(bf);
 }
 
-void launch_resize_bgr8_to_rgb_nchw_fp16(const unsigned char* src_bgr_dev, size_t src_pitch,
+void launch_resize_rgb8_to_rgb_nchw_fp16(const unsigned char* src_rgb_dev, size_t src_pitch,
                                          int srcW, int srcH,
                                          __half* dst_dev, int dstW, int dstH,
                                          cudaStream_t stream)
 {
     dim3 block = make_block();
     dim3 grid((dstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y, 1);
-    resize_bgr8_to_rgb_nchw_fp16_kernel<<<grid, block, 0, stream>>>(src_bgr_dev, src_pitch, srcW, srcH,
+    resize_rgb8_to_rgb_nchw_fp16_kernel<<<grid, block, 0, stream>>>(src_rgb_dev, src_pitch, srcW, srcH,
                                                                     dst_dev, dstW, dstH);
 }
 

@@ -56,7 +56,7 @@ public:
     ~AIDetector();
 
     /**
-     * @brief 直接使用 GPU 图像进行检测（建议传入 BGR8，任意尺寸）
+     * @brief 直接使用 GPU 图像进行检测（传入 RGB8，任意尺寸）
      * 
      * @param input_gpu 输入 GPU 图像（CV_8UC3）
      * @param detect_color 检测颜色 (0: red, 1: blue)
@@ -82,10 +82,10 @@ private:
     /**
      * @brief 执行模型推理
      * 
-     * @param gpu_bgr8 输入GPU图像
+     * @param gpu_rgb8 输入GPU图像（RGB8）
      * @param detect_color 检测颜色
      */
-    void infer(const cv::cuda::GpuMat & gpu_bgr8, int detect_color);
+    void infer(const cv::cuda::GpuMat & gpu_rgb8, int detect_color);
 
     /**
      * @brief Sigmoid 激活函数
@@ -126,8 +126,6 @@ private:
     cudaStream_t stream_;                                              ///< CUDA Stream
     void * input_device_buffer_{nullptr};                              ///< 输入缓冲区 (GPU)
     void * output_device_buffer_{nullptr};                             ///< 输出缓冲区 (GPU)
-    void * input_device_bgr8_{nullptr};                                ///< 设备端 BGR8 中间缓冲
-    size_t bgr8_bytes_{0};                                             ///< BGR8 缓冲区大小（字节）
     // GPU 后处理缓冲
     void * device_post_dets_{nullptr};                                  ///< 设备端候选输出数组
     int  * device_post_count_{nullptr};                                 ///< 设备端候选数量计数器

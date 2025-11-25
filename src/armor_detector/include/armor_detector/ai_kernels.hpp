@@ -6,9 +6,9 @@
 namespace rm_auto_aim
 {
 
-// 融合预处理：从任意尺寸 BGR8 源做双线性缩放 + BGR->RGB + NCHW + 归一化到 FP16
+// 融合预处理：从任意尺寸 RGB8 源做双线性缩放 + NCHW + 归一化到 FP16
 // 支持带 pitch 的源图（以字节为单位）。
-void launch_resize_bgr8_to_rgb_nchw_fp16(const unsigned char* src_bgr_dev, size_t src_pitch,
+void launch_resize_rgb8_to_rgb_nchw_fp16(const unsigned char* src_rgb_dev, size_t src_pitch,
 										 int srcW, int srcH,
 										 __half* dst_dev, int dstW, int dstH,
 										 cudaStream_t stream);

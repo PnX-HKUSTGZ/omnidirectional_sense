@@ -117,10 +117,6 @@ AIDetector::AIDetector(const std::string& model_path, const std::string&, float 
     checkCuda(cudaMalloc(&input_device_buffer_, input_size_ * getElementSize(input_data_type_)), "cudaMalloc input");
     checkCuda(cudaMalloc(&output_device_buffer_, output_size_ * getElementSize(output_data_type_)), "cudaMalloc output");
 
-    // Allocate BGR8 pinned/device buffers for GPU preprocess (H x W x 3)
-    bgr8_bytes_ = static_cast<size_t>(IMAGE_WIDTH) * IMAGE_HEIGHT * 3;
-    checkCuda(cudaMalloc(&input_device_bgr8_, bgr8_bytes_), "cudaMalloc bgr8");
-
     // Allocate GPU postprocess buffers
     checkCuda(cudaMalloc(&device_post_dets_, static_cast<size_t>(max_post_out_) * sizeof(PostDet)), "cudaMalloc post_dets");
     checkCuda(cudaMalloc(&device_post_count_, sizeof(int)), "cudaMalloc post_count");
@@ -139,7 +135,6 @@ AIDetector::~AIDetector()
 {
     if (input_device_buffer_) cudaFree(input_device_buffer_);
     if (output_device_buffer_) cudaFree(output_device_buffer_);
-    if (input_device_bgr8_) cudaFree(input_device_bgr8_);
     
     if (device_post_dets_) cudaFree(device_post_dets_);
     if (device_post_count_) cudaFree(device_post_count_);
@@ -163,23 +158,23 @@ std::vector<Armor> AIDetector::detect(const cv::cuda::GpuMat& gpu_img, int color
     return armors_;
 }
 
-void AIDetector::infer(const cv::cuda::GpuMat& gpu_bgr8, int detect_color)
+void AIDetector::infer(const cv::cuda::GpuMat& gpu_rgb8, int detect_color)
 {
     // 清理结果
     objects_.clear();
     tmp_objects_.clear();
 
     // 1) 输入检查
-    if (gpu_bgr8.type() != CV_8UC3) {
+    if (gpu_rgb8.type() != CV_8UC3) {
         RCLCPP_ERROR(rclcpp::get_logger("AIDetector"),
                      "[AIDetector] Input GpuMat must be CV_8UC3, aborting inference.");
         return;
     }
-    // 2) 融合：从原图直接双线性缩放 + BGR->RGB + NCHW + 归一化到 FP16 输入
-    launch_resize_bgr8_to_rgb_nchw_fp16(
-        static_cast<const unsigned char*>(gpu_bgr8.ptr<unsigned char>()),
-        static_cast<size_t>(gpu_bgr8.step),
-        gpu_bgr8.cols, gpu_bgr8.rows,
+    // 2) 融合：从原图直接双线性缩放 + NCHW + 归一化到 FP16 输入（源图为 RGB）
+    launch_resize_rgb8_to_rgb_nchw_fp16(
+        static_cast<const unsigned char*>(gpu_rgb8.ptr<unsigned char>()),
+        static_cast<size_t>(gpu_rgb8.step),
+        gpu_rgb8.cols, gpu_rgb8.rows,
         static_cast<__half*>(input_device_buffer_), IMAGE_WIDTH, IMAGE_HEIGHT,
         stream_);
 
@@ -191,8 +186,8 @@ void AIDetector::infer(const cv::cuda::GpuMat& gpu_bgr8, int detect_color)
     // GPU 后处理：在设备端完成 sigmoid/阈值/argmax/过滤/压缩
     const int kAttr = 22;
     int num_det = static_cast<int>(output_size_ / kAttr);
-    float sx = static_cast<float>(gpu_bgr8.cols) / IMAGE_WIDTH;
-    float sy = static_cast<float>(gpu_bgr8.rows) / IMAGE_HEIGHT;
+    float sx = static_cast<float>(gpu_rgb8.cols) / IMAGE_WIDTH;
+    float sy = static_cast<float>(gpu_rgb8.rows) / IMAGE_HEIGHT;
 
     // 清零计数器
     checkCuda(cudaMemsetAsync(device_post_count_, 0, sizeof(int), stream_), "Memset post_count");
