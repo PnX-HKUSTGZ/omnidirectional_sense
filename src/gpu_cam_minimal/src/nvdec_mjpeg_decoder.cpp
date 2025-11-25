@@ -28,6 +28,7 @@
 #include <rcutils/logging_macros.h>
 #include <NvBuffer.h>
 #include "NvBufSurface.h"
+#include "gpu_cam_minimal/yuv2rgb.cuh"
 
 namespace gpu_cam_minimal {
 
@@ -89,7 +90,7 @@ struct NvdecMjpegDecoder::Impl {
     bool grab_camera_frame(v4l2_buffer &out_vbuf, void*& out_data, size_t& out_len);
     bool feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vbuf, const void* data, size_t len,
                                          NvBuffer*& out_cap_nvbuf, v4l2_buffer &out_cbuf);
-    bool convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_bgr);
+    bool convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_rgb);
     bool prepare_capture_dmabuf_buffer(v4l2_buffer &cbuf);
     NvBufSurfaceColorFormat resolve_capture_color_format(uint32_t pixfmt) const;
     bool requeue_capture_buffer(v4l2_buffer &cbuf);
@@ -397,9 +398,10 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
     return true;
 }
 
-// Helper: convert a captured NvBuffer to CUDA GpuMat (and into out_bgr). Handles EGL/CUDA registration and color conversion.
-bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_bgr)
+// Helper: convert a captured NvBuffer to CUDA GpuMat RGB frame. Handles EGL/CUDA registration and color conversion.
+bool NvdecMjpegDecoder::Impl::convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_rgb)
 {
+    (void)cap_nvbuf;
     int dmabuf_fd = get_capture_dmabuf_fd(cbuf.index);
     if (dmabuf_fd < 0) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Invalid DMABUF fd for capture buffer %u", cbuf.index);
@@ -460,109 +462,72 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
     int W = dec_w > 0 ? dec_w : width;
     int H = dec_h > 0 ? dec_h : height;
 
-    // branch by pixelformat similar to original implementation
-    if (capture_pixfmt == V4L2_PIX_FMT_YUV420M || capture_pixfmt == V4L2_PIX_FMT_YUV420) {
-        void* pY = eglFrame.frame.pPitch[0];
-        void* pU = eglFrame.frame.pPitch[1];
-        void* pV = eglFrame.frame.pPitch[2];
-        size_t pitch = eglFrame.pitch;
-
-        cv::cuda::GpuMat y(H, W, CV_8UC1, pY, pitch);
-        cv::cuda::GpuMat u(H / 2, W / 2, CV_8UC1, pU, pitch);
-        cv::cuda::GpuMat v(H / 2, W / 2, CV_8UC1, pV, pitch);
-
-        cv::cuda::GpuMat i420(H * 3 / 2, W, CV_8UC1);
-        y.copyTo(i420.rowRange(0, H));
-        cv::cuda::GpuMat dstU = i420.rowRange(H, H + H / 2).colRange(0, W / 2);
-        cv::cuda::GpuMat dstV = i420.rowRange(H + H / 2, H * 3 / 2).colRange(0, W / 2);
-        u.copyTo(dstU);
-        v.copyTo(dstV);
-
-        try {
-            cv::cuda::cvtColor(i420, out_bgr, cv::COLOR_YUV2RGBA_I420);
-        } catch (const cv::Exception& e) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor I420->RGBA failed: %s", e.what());
-            cuGraphicsUnregisterResource(cuda_resource);
-            eglDestroyImageKHR(egl_display, egl_image);
-            unmap_egl_image();
-            (void)requeue_capture_buffer(cbuf);
-            return false;
-        }
-    } else if (capture_pixfmt == V4L2_PIX_FMT_YUV422M) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "YUV422M to RGBA conversion via CUDA is not directly supported; performing manual conversion.");
-        void* pY = eglFrame.frame.pPitch[0];
-        void* pU = eglFrame.frame.pPitch[1];
-        void* pV = eglFrame.frame.pPitch[2];
-        size_t pitch = eglFrame.pitch;
-
-        cv::cuda::GpuMat y(H, W, CV_8UC1, pY, pitch);
-        cv::cuda::GpuMat u_full(H, W / 2, CV_8UC1, pU, pitch);
-        cv::cuda::GpuMat v_full(H, W / 2, CV_8UC1, pV, pitch);
-
-        cv::cuda::GpuMat u_half, v_half;
-        try {
-            cv::cuda::resize(u_full, u_half, cv::Size(W / 2, H / 2), 0.0, 0.0, cv::INTER_LINEAR);
-            cv::cuda::resize(v_full, v_half, cv::Size(W / 2, H / 2), 0.0, 0.0, cv::INTER_LINEAR);
-        } catch (const cv::Exception& e) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA resize on YUV422 planes failed: %s", e.what());
-            cuGraphicsUnregisterResource(cuda_resource);
-            eglDestroyImageKHR(egl_display, egl_image);
-            unmap_egl_image();
-            (void)requeue_capture_buffer(cbuf);
-            return false;
+    bool converted = false;
+    do {
+        if (capture_pixfmt != V4L2_PIX_FMT_YUV422M) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Unsupported capture pixelformat 0x%08x for RGB conversion", capture_pixfmt);
+            break;
         }
 
-        cv::cuda::GpuMat i420(H * 3 / 2, W, CV_8UC1);
-        y.copyTo(i420.rowRange(0, H));
-        cv::cuda::GpuMat dstU = i420.rowRange(H, H + H / 2).colRange(0, W / 2);
-        cv::cuda::GpuMat dstV = i420.rowRange(H + H / 2, H * 3 / 2).colRange(0, W / 2);
-        u_half.copyTo(dstU);
-        v_half.copyTo(dstV);
+        if (eglFrame.frameType != CU_EGL_FRAME_TYPE_PITCH) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Unexpected CUeglFrame type %d (expected PITCH)", static_cast<int>(eglFrame.frameType));
+            break;
+        }
 
-        try {
-            cv::cuda::cvtColor(i420, out_bgr, cv::COLOR_YUV2RGBA_I420);
-        } catch (const cv::Exception& e) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor I420->RGBA failed for YUV422 planar: %s", e.what());
-            cuGraphicsUnregisterResource(cuda_resource);
-            eglDestroyImageKHR(egl_display, egl_image);
-            unmap_egl_image();
-            (void)requeue_capture_buffer(cbuf);
-            return false;
+        if (eglFrame.numPlanes < 3) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "CUeglFrame reported %d planes; need 3 for YUV422M", eglFrame.numPlanes);
+            break;
         }
-    } else if (capture_pixfmt == V4L2_PIX_FMT_YUYV) {
-        void* pYUYV = eglFrame.frame.pPitch[0];
-        size_t pitch = eglFrame.pitch;
-        cv::cuda::GpuMat yuyv(H, W, CV_8UC2, pYUYV, pitch);
-        try {
-            cv::cuda::cvtColor(yuyv, out_bgr, cv::COLOR_YUV2RGBA_YUY2);
-        } catch (const cv::Exception& e) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor YUY2->RGBA failed: %s", e.what());
-            cuGraphicsUnregisterResource(cuda_resource);
-            eglDestroyImageKHR(egl_display, egl_image);
-            unmap_egl_image();
-            (void)requeue_capture_buffer(cbuf);
-            return false;
+
+        const NvBufSurfaceParams &surf_params = nvbuf_surf->surfaceList[0];
+        const NvBufSurfacePlaneParams &plane_params = surf_params.planeParams;
+        if (plane_params.num_planes < 3) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "NvBufSurface plane count %u < 3", plane_params.num_planes);
+            break;
         }
-    } else {
-        void* pY = eglFrame.frame.pPitch[0];
-        void* pUV = eglFrame.frame.pPitch[1];
-        size_t pitch = eglFrame.pitch;
-        cv::cuda::GpuMat y(H, W, CV_8UC1, pY, pitch);
-        cv::cuda::GpuMat uv(H / 2, W / 2, CV_8UC2, pUV, pitch);
-        cv::cuda::GpuMat nv12(H * 3 / 2, W, CV_8UC1);
-        y.copyTo(nv12.rowRange(0, H));
-        uv.copyTo(nv12.rowRange(H, H * 3 / 2));
-        try {
-            cv::cuda::cvtColor(nv12, out_bgr, cv::COLOR_YUV2RGBA_NV12);
-        } catch (const cv::Exception& e) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "CUDA cvtColor NV12->RGBA failed: %s", e.what());
-            cuGraphicsUnregisterResource(cuda_resource);
-            eglDestroyImageKHR(egl_display, egl_image);
-            unmap_egl_image();
-            (void)requeue_capture_buffer(cbuf);
-            return false;
+
+        size_t y_pitch = plane_params.pitch[0];
+        size_t u_pitch = plane_params.pitch[1];
+        size_t v_pitch = plane_params.pitch[2];
+        const size_t fallback_pitch = static_cast<size_t>(eglFrame.pitch);
+        if (y_pitch == 0) { y_pitch = fallback_pitch; }
+        if (u_pitch == 0) { u_pitch = fallback_pitch; }
+        if (v_pitch == 0) { v_pitch = fallback_pitch; }
+
+        const unsigned char *y_plane = static_cast<const unsigned char*>(eglFrame.frame.pPitch[0]);
+        const unsigned char *u_plane = static_cast<const unsigned char*>(eglFrame.frame.pPitch[1]);
+        const unsigned char *v_plane = static_cast<const unsigned char*>(eglFrame.frame.pPitch[2]);
+
+        if (out_rgb.empty() || out_rgb.rows != H || out_rgb.cols != W || out_rgb.type() != CV_8UC3) {
+            out_rgb.create(H, W, CV_8UC3);
         }
-    }
+
+        cudaStream_t stream = 0;
+        cudaError_t err = gpuConvertYUV422MToRGB(
+                y_plane,
+                u_plane,
+                v_plane,
+                out_rgb.ptr<unsigned char>(),
+                y_pitch,
+                u_pitch,
+                v_pitch,
+                static_cast<size_t>(out_rgb.step),
+                static_cast<unsigned int>(W),
+                static_cast<unsigned int>(H),
+                stream);
+        if (err != cudaSuccess) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "gpuConvertYUV422MToRGB failed: %s", cudaGetErrorString(err));
+            break;
+        }
+
+        err = cudaStreamSynchronize(stream);
+        if (err != cudaSuccess) {
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "cudaStreamSynchronize failed: %s", cudaGetErrorString(err));
+            break;
+        }
+
+        converted = true;
+    } while (false);
 
     // cleanup
     cuGraphicsUnregisterResource(cuda_resource);
@@ -574,7 +539,7 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_bgr(NvBuffer* cap_nvbuf, v4l2_b
         return false;
     }
 
-    return true;
+    return converted;
 }
 
 
@@ -721,7 +686,7 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
 
 
 
-bool NvdecMjpegDecoder::read_bgr(cv::cuda::GpuMat& out_bgr)
+bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb)
 {
     if (impl_->v4l2_fd < 0 || !impl_->dec) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Invalid decoder or v4l2_fd not opened.");
@@ -758,13 +723,13 @@ bool NvdecMjpegDecoder::read_bgr(cv::cuda::GpuMat& out_bgr)
         return false;
     }
 
-    // 3) 将 capture NvBuffer 转成 GPU 上的 RGBA/BGR（命名沿用 out_bgr）
-    if (!impl_->convert_capture_to_bgr(cap_nvbuf, cbuf, out_bgr)) {
+    // 3) 将 capture NvBuffer 转成 GPU 上的 RGB 图像
+    if (!impl_->convert_capture_to_rgb(cap_nvbuf, cbuf, out_rgb)) {
         return false;
     }
 
-    if (out_bgr.empty()) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Output BGR frame is empty after decoding.");
+    if (out_rgb.empty()) {
+        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Output RGB frame is empty after decoding.");
         return false;
     }
 

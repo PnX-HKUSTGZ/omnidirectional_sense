@@ -8,7 +8,7 @@
 
 namespace gpu_cam_minimal {
 
-// 简单的 Jetson MJPEG→NV12→BGR(GPU) 解码器包装。
+// 简单的 Jetson MJPEG→NV12→RGB(GPU) 解码器包装。
 // 头文件不做条件编译，实际可用性由实现文件中的 is_supported() 和 open() 返回值决定。
 class NvdecMjpegDecoder {
 public:
@@ -19,9 +19,9 @@ public:
   // width/height/fps 为期望配置；驱动/解码器可能会调整为实际值。
   bool open(const std::string& video_device, int width, int height, double fps);
 
-  // 读取一帧并在 GPU 上输出 BGR 格式；成功返回 true。
-  // out_bgr 会被就地写入/重用。
-  bool read_bgr(cv::cuda::GpuMat& out_bgr);
+  // 读取一帧并在 GPU 上输出 RGB 格式；成功返回 true。
+  // out_rgb 会被就地写入/重用。
+  bool read_rgb(cv::cuda::GpuMat& out_rgb);
 
   // 关闭资源。
   void close_decoder();

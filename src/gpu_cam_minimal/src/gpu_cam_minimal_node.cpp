@@ -12,6 +12,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+#include <opencv2/imgproc.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/cudaimgproc.hpp>
 
@@ -60,7 +61,7 @@ public:
 private:
   void openCamera()
   {
-    // Try to use Jetson NVDEC path for MJPEG -> NV12 -> BGR on GPU
+    // Try to use Jetson NVDEC path for MJPEG -> NV12 -> RGB on GPU
     use_hw_mjpeg_ = (publish_mode_ == "gpu" || publish_mode_ == "gpu_hw") &&
                     (pixel_format_ == "mjpeg" || pixel_format_ == "MJPG") &&
                     gpu_cam_minimal::NvdecMjpegDecoder::is_supported();
@@ -107,7 +108,7 @@ private:
     }
     if (!use_hw_mjpeg_) {
       // Pre-allocate GPU buffer with expected size and type (we expect 8UC3 from OpenCV)
-      d_frame_ = cv::cuda::GpuMat(image_height_, image_width_, CV_8UC3);
+      d_frame_rgb_ = cv::cuda::GpuMat(image_height_, image_width_, CV_8UC3);
       RCLCPP_INFO(get_logger(), "OpenCV CUDA detected: will upload frames to GPU (mode=%s)", publish_mode_.c_str());
     } else {
       RCLCPP_INFO(get_logger(), "OpenCV CUDA detected: using Jetson NVDEC path for MJPEG");
@@ -126,30 +127,38 @@ private:
 
   void tick()
   {
-    cv::Mat frame;
-    cv::cuda::GpuMat gpu_bgr;
+    cv::Mat frame_bgr;
+    cv::Mat frame_rgb_cpu;
+    cv::cuda::GpuMat gpu_rgb;
 
     if (use_hw_mjpeg_) {
-      if (!nvdec_ ||
-          !nvdec_->read_bgr(gpu_bgr)
-      ) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "NVDEC read/decode failed");
-            return;
+      if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb)) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "NVDEC read/decode failed");
+        return;
       }
-      std::cerr << "Decoded frame size: " << gpu_bgr.cols << "x" << gpu_bgr.rows << std::endl;
-    } 
-    else {
-      if (!cap_.read(frame)) {
+      std::cerr << "Decoded frame size: " << gpu_rgb.cols << "x" << gpu_rgb.rows << std::endl;
+    } else {
+      if (!cap_.read(frame_bgr)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed to read frame");
         return;
       }
-      // Upload to GPU (no format conversion)
-      if (d_frame_.empty() || d_frame_.rows != frame.rows || d_frame_.cols != frame.cols || d_frame_.type() != frame.type()) {
-        d_frame_.release();
-        d_frame_ = cv::cuda::GpuMat(frame.size(), frame.type());
+      cv::cvtColor(frame_bgr, frame_rgb_cpu, cv::COLOR_BGR2RGB);
+      if (frame_rgb_cpu.empty()) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Converted RGB frame is empty");
+        return;
       }
-      d_frame_.upload(frame);
-      gpu_bgr = d_frame_;
+      if (d_frame_rgb_.empty() || d_frame_rgb_.rows != frame_rgb_cpu.rows ||
+          d_frame_rgb_.cols != frame_rgb_cpu.cols || d_frame_rgb_.type() != frame_rgb_cpu.type()) {
+        d_frame_rgb_.release();
+        d_frame_rgb_ = cv::cuda::GpuMat(frame_rgb_cpu.size(), frame_rgb_cpu.type());
+      }
+      d_frame_rgb_.upload(frame_rgb_cpu);
+      gpu_rgb = d_frame_rgb_;
+    }
+
+    if (gpu_rgb.empty()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "GPU RGB frame is empty");
+      return;
     }
 
     // Prepare camera info
@@ -161,17 +170,11 @@ private:
       // Publish GPU image with type adapter; no conversions
       armor_detector::GpuImage gpu_msg;
       gpu_msg.header = ci.header;
-      gpu_msg.encoding = "bgr8";
-  gpu_msg.width = static_cast<uint32_t>(
-    gpu_bgr.cols
-  );
-  gpu_msg.height = static_cast<uint32_t>(
-    gpu_bgr.rows
-  );
-  gpu_msg.step = static_cast<uint32_t>(
-    gpu_bgr.step
-  );
-  gpu_msg.gpu = std::make_shared<cv::cuda::GpuMat>(gpu_bgr);
+      gpu_msg.encoding = "rgb8";
+      gpu_msg.width = static_cast<uint32_t>(gpu_rgb.cols);
+      gpu_msg.height = static_cast<uint32_t>(gpu_rgb.rows);
+      gpu_msg.step = static_cast<uint32_t>(gpu_rgb.step);
+      gpu_msg.gpu = std::make_shared<cv::cuda::GpuMat>(gpu_rgb);
       gpu_image_pub_->publish(gpu_msg);
       if (gpu_cam_info_pub_) {
         gpu_cam_info_pub_->publish(ci);
@@ -179,29 +182,29 @@ private:
       return;
     }
 
-    // CPU publish path: sensor_msgs/Image (no conversion; assuming BGR8)
+    // CPU publish path: sensor_msgs/Image (already RGB)
     auto msg = sensor_msgs::msg::Image();
     msg.header = ci.header;
-    msg.encoding = "bgr8";
+    msg.encoding = "rgb8";
     msg.is_bigendian = false;
 
     if (!use_hw_mjpeg_) {
-      msg.height = static_cast<uint32_t>(frame.rows);
-      msg.width = static_cast<uint32_t>(frame.cols);
-      msg.step = static_cast<uint32_t>(frame.step);
-      size_t size_bytes = frame.total() * frame.elemSize();
+      msg.height = static_cast<uint32_t>(frame_rgb_cpu.rows);
+      msg.width = static_cast<uint32_t>(frame_rgb_cpu.cols);
+      msg.step = static_cast<uint32_t>(frame_rgb_cpu.step);
+      size_t size_bytes = frame_rgb_cpu.total() * frame_rgb_cpu.elemSize();
       msg.data.resize(size_bytes);
-      std::memcpy(msg.data.data(), frame.data, size_bytes);
+      std::memcpy(msg.data.data(), frame_rgb_cpu.data, size_bytes);
     } else {
       // Download minimal copy to publish when GPU transport is not available
-      cv::Mat bgr_cpu;
-      gpu_bgr.download(bgr_cpu);
-      msg.height = static_cast<uint32_t>(bgr_cpu.rows);
-      msg.width = static_cast<uint32_t>(bgr_cpu.cols);
-      msg.step = static_cast<uint32_t>(bgr_cpu.step);
-      size_t size_bytes = bgr_cpu.total() * bgr_cpu.elemSize();
+      cv::Mat rgb_cpu;
+      gpu_rgb.download(rgb_cpu);
+      msg.height = static_cast<uint32_t>(rgb_cpu.rows);
+      msg.width = static_cast<uint32_t>(rgb_cpu.cols);
+      msg.step = static_cast<uint32_t>(rgb_cpu.step);
+      size_t size_bytes = rgb_cpu.total() * rgb_cpu.elemSize();
       msg.data.resize(size_bytes);
-      std::memcpy(msg.data.data(), bgr_cpu.data, size_bytes);
+      std::memcpy(msg.data.data(), rgb_cpu.data, size_bytes);
     }
 
     image_pub_->publish(msg);
@@ -228,7 +231,7 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
 
   cv::VideoCapture cap_;
-  cv::cuda::GpuMat d_frame_;
+  cv::cuda::GpuMat d_frame_rgb_;
   std::unique_ptr<camera_info_manager::CameraInfoManager> cinfo_mgr_;
 
   bool use_hw_mjpeg_ {false};

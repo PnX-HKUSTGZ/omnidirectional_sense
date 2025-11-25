@@ -3,9 +3,9 @@
 Minimal ROS 2 node that:
 - Captures frames from a video device using OpenCV (CAP_V4L2).
 - Uploads each frame to GPU via OpenCV CUDA (if available at build time).
-- Publishes the frame as `sensor_msgs/Image` with encoding `bgr8`.
+- Publishes the frame as `sensor_msgs/Image` with encoding `rgb8`.
 
-No pixel format conversions are performed in the code.
+Frames are converted to RGB before publishing to keep a consistent color order for downstream consumers.
 
 ## Parameters
 - `device_id` (int, default 0): Video device index (e.g., `/dev/video0`).
@@ -30,4 +30,4 @@ ros2 run gpu_cam_minimal gpu_cam_minimal_node --ros-args -p device_id:=0 -p widt
 
 Notes:
 - If OpenCV was built without CUDA, the node still runs and publishes images, but logs a warning and skips GPU upload.
-- The published `sensor_msgs/Image` uses `bgr8` as provided by OpenCV `VideoCapture` without explicit conversion in this node.
+- The published `sensor_msgs/Image` uses `rgb8`, converting from the camera driver's default ordering when necessary.
