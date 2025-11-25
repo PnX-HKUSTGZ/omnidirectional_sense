@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <sys/time.h>
 
 #include <opencv2/core/cuda.hpp>
 
@@ -21,7 +22,9 @@ public:
 
   // 读取一帧并在 GPU 上输出 RGB 格式；成功返回 true。
   // out_rgb 会被就地写入/重用。
-  bool read_rgb(cv::cuda::GpuMat& out_rgb);
+  // 如 capture_time 非空，则返回底层 V4L2 时间戳；timestamp_monotonic 指示是否基于 monotonic clock。
+  bool read_rgb(cv::cuda::GpuMat& out_rgb, struct timeval* capture_time = nullptr,
+                bool* timestamp_monotonic = nullptr);
 
   // 关闭资源。
   void close_decoder();

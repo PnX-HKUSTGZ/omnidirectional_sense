@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 #include <drm/drm_fourcc.h>
 #define EGL_EGLEXT_PROTOTYPES   
 #include <EGL/egl.h>
@@ -776,7 +777,9 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
 
 
 
-bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb)
+bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
+                                struct timeval* capture_time,
+                                bool* timestamp_monotonic)
 {
     if (impl_->v4l2_fd < 0 || !impl_->dec) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Invalid decoder or v4l2_fd not opened.");
@@ -790,6 +793,13 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb)
     if (!impl_->grab_camera_frame(vbuf, cam_data, cam_len)) {
         // helper 内部已做必要日志与回队（当需要时）。
         return false;
+    }
+
+    if (capture_time) {
+        *capture_time = vbuf.timestamp;
+    }
+    if (timestamp_monotonic) {
+        *timestamp_monotonic = (vbuf.flags & V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) != 0;
     }
     
 

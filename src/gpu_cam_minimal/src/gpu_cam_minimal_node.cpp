@@ -8,9 +8,11 @@
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <camera_info_manager/camera_info_manager.hpp>
@@ -42,8 +44,8 @@ public:
     image_width_ = this->declare_parameter<int>("image_width", 640);
     image_height_ = this->declare_parameter<int>("image_height", 480);
     video_device_ = this->declare_parameter<std::string>("video_device", "/dev/video0");
-    publish_mode_ = this->declare_parameter<std::string>("publish_mode", "cpu"); // cpu|gpu
-    pixel_format_ = this->declare_parameter<std::string>("pixel_format", "mjpeg"); // only mjpeg supported
+    publish_mode_ = "gpu"; // fixed mode
+    pixel_format_ = "mjpeg"; // pipeline assumes MJPEG input
     debug_enabled_ = this->declare_parameter<bool>("debug", false);
     control_params_.brightness = this->declare_parameter<int>("brightness", 0);
     control_params_.contrast = this->declare_parameter<int>("contrast", 32);
@@ -198,6 +200,30 @@ private:
     ::close(fd);
   }
 
+  static int64_t timeval_to_ns(const timeval & tv)
+  {
+    constexpr int64_t kSecToNs = 1000000000LL;
+    constexpr int64_t kUsecToNs = 1000LL;
+    return static_cast<int64_t>(tv.tv_sec) * kSecToNs + static_cast<int64_t>(tv.tv_usec) * kUsecToNs;
+  }
+
+  rclcpp::Time convert_v4l2_timestamp(const timeval & tv, bool is_monotonic)
+  {
+    int64_t ts_ns = timeval_to_ns(tv);
+    if (ts_ns <= 0) {
+      return this->now();
+    }
+
+    auto ros_now = this->now();
+    rclcpp::Time ref_clock = is_monotonic ? steady_clock_.now() : system_clock_.now();
+    int64_t offset = ros_now.nanoseconds() - ref_clock.nanoseconds();
+    int64_t ros_ns = ts_ns + offset;
+    if (ros_ns < 0) {
+      ros_ns = 0;
+    }
+    return rclcpp::Time(ros_ns, RCL_ROS_TIME);
+  }
+
   void tick()
   {
     rclcpp::Time timestamp;
@@ -206,11 +232,13 @@ private:
     cv::cuda::GpuMat gpu_rgb;
 
     if (use_hw_mjpeg_) {
-      timestamp = this->now();
-      if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb)) {
+      struct timeval capture_tv{};
+      bool ts_monotonic = false;
+      if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb, &capture_tv, &ts_monotonic)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "NVDEC read/decode failed");
         return;
       }
+      timestamp = convert_v4l2_timestamp(capture_tv, ts_monotonic);
     } else {
       timestamp = this->now();
       if (!cap_.read(frame_bgr)) {
@@ -346,6 +374,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr gpu_cam_info_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+  rclcpp::Clock system_clock_{RCL_SYSTEM_TIME};
 
   cv::VideoCapture cap_;
   cv::cuda::GpuMat d_frame_rgb_;
@@ -373,6 +403,7 @@ private:
 
 };
 
+#ifndef GPU_CAM_MINIMAL_COMPONENT_ONLY
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
@@ -387,3 +418,6 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return 0;
 }
+#endif
+
+RCLCPP_COMPONENTS_REGISTER_NODE(GpuCamMinimalNode)

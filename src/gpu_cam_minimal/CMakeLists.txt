@@ -22,6 +22,7 @@ endif()
 
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core videoio)
+find_package(rclcpp_components REQUIRED)
 
 # Optional: detect OpenCV CUDA runtime libs
 find_library(OPENCV_CUDAWARPING_LIB opencv_cudawarping)
@@ -80,20 +81,31 @@ include(CheckIncludeFileCXX)
 check_include_file_cxx("opencv2/core/cuda.hpp" HAVE_OPENCV_CUDA)
 
 
-# Executable
-set(PROJECT_SOURCES
-  src/${PROJECT_NAME}_node.cpp
+# Sources shared between component and standalone executable
+set(GPU_CAM_NODE_SRC src/${PROJECT_NAME}_node.cpp)
+set(GPU_CAM_COMMON_SRC
   src/nvdec_mjpeg_decoder.cpp
   src/yuv2rgb.cu
 )
-add_executable(${PROJECT_NAME}_node ${PROJECT_SOURCES} ${NV_CLASSES_SRC} ${NV_CUDA_SRC})
+
+set(GPU_CAM_ALL_SRC ${GPU_CAM_NODE_SRC} ${GPU_CAM_COMMON_SRC} ${NV_CLASSES_SRC} ${NV_CUDA_SRC})
+
+# Component library (shared)
+add_library(${PROJECT_NAME}_component SHARED ${GPU_CAM_ALL_SRC})
+target_compile_definitions(${PROJECT_NAME}_component PRIVATE GPU_CAM_MINIMAL_COMPONENT_ONLY)
+
+# Standalone executable reusing same sources
+add_executable(${PROJECT_NAME}_node ${GPU_CAM_ALL_SRC})
 
 # Link OpenCV
+target_link_libraries(${PROJECT_NAME}_component ${OpenCV_LIBRARIES})
 target_link_libraries(${PROJECT_NAME}_node ${OpenCV_LIBRARIES})
 
 # Link OpenCV CUDA if present
 if(OPENCV_CUDAWARPING_LIB AND OPENCV_CUDAIMGPROC_LIB)
+  target_link_libraries(${PROJECT_NAME}_component ${OPENCV_CUDAWARPING_LIB} ${OPENCV_CUDAIMGPROC_LIB})
   target_link_libraries(${PROJECT_NAME}_node ${OPENCV_CUDAWARPING_LIB} ${OPENCV_CUDAIMGPROC_LIB})
+  target_compile_definitions(${PROJECT_NAME}_component PRIVATE GPU_CAM_HAS_OPENCV_CUDA=1)
   target_compile_definitions(${PROJECT_NAME}_node PRIVATE GPU_CAM_HAS_OPENCV_CUDA=1)
   message(STATUS "gpu_cam_minimal: OpenCV CUDA detected (linking cudaimgproc,cudawarping)")
 else()
@@ -101,7 +113,7 @@ else()
 endif()
 
 # Link Jetson NVDEC / Multimedia libraries (Rules.mk equivalent)
-target_link_libraries(${PROJECT_NAME}_node
+set(GPU_CAM_LINK_LIBS
     ${LIB_V4L2}
     ${LIB_EGL}
     ${LIB_GLESv2}
@@ -117,19 +129,37 @@ target_link_libraries(${PROJECT_NAME}_node
     cudart
 )
 
+  target_link_libraries(${PROJECT_NAME}_component ${GPU_CAM_LINK_LIBS})
+  target_link_libraries(${PROJECT_NAME}_node ${GPU_CAM_LINK_LIBS})
+
 # Include directories
+target_include_directories(${PROJECT_NAME}_component
+  PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+)
 target_include_directories(${PROJECT_NAME}_node
   PRIVATE
     ${OpenCV_INCLUDE_DIRS}
 )
 if(CUDA_INCLUDE_DIR)
+  target_include_directories(${PROJECT_NAME}_component PRIVATE ${CUDA_INCLUDE_DIR})
   target_include_directories(${PROJECT_NAME}_node PRIVATE ${CUDA_INCLUDE_DIR})
 endif()
 # Include Jetson Multimedia API headers
+target_include_directories(${PROJECT_NAME}_component BEFORE PRIVATE
+  /usr/src/jetson_multimedia_api/include
+  /usr/src/jetson_multimedia_api/include/libjpeg-8b
+  /usr/src/jetson_multimedia_api/samples/common/classes
+)
 target_include_directories(${PROJECT_NAME}_node BEFORE PRIVATE
   /usr/src/jetson_multimedia_api/include
   /usr/src/jetson_multimedia_api/include/libjpeg-8b
   /usr/src/jetson_multimedia_api/samples/common/classes
+)
+target_include_directories(${PROJECT_NAME}_component
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
 )
 target_include_directories(${PROJECT_NAME}_node
   PUBLIC
@@ -138,9 +168,19 @@ target_include_directories(${PROJECT_NAME}_node
 )
 
 # ROS2 dependencies
-ament_target_dependencies(${PROJECT_NAME}_node armor_detector rclcpp sensor_msgs camera_info_manager)
+set(GPU_CAM_DEPENDENCIES armor_detector rclcpp sensor_msgs camera_info_manager rclcpp_components)
+ament_target_dependencies(${PROJECT_NAME}_component ${GPU_CAM_DEPENDENCIES})
+ament_target_dependencies(${PROJECT_NAME}_node ${GPU_CAM_DEPENDENCIES})
+
+rclcpp_components_register_nodes(${PROJECT_NAME}_component "GpuCamMinimalNode")
 
 # Install the node
+install(TARGETS ${PROJECT_NAME}_component
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
 install(TARGETS ${PROJECT_NAME}_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
@@ -153,11 +193,18 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/docs OR EXISTS ${CMAKE_CURRENT_SOURCE_DIR}
   )
 endif()
 
+target_compile_options(${PROJECT_NAME}_component PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-w>
+  $<$<COMPILE_LANGUAGE:CXX>:-isystem /usr/src/jetson_multimedia_api/include -w>
+)
 target_compile_options(${PROJECT_NAME}_node PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-w>   # 屏蔽 CUDA 文件编译器警告
     $<$<COMPILE_LANGUAGE:CXX>:-isystem /usr/src/jetson_multimedia_api/include -w>
 )
 
+set_target_properties(${PROJECT_NAME}_component PROPERTIES
+  CUDA_ARCHITECTURES "87"
+)
 set_target_properties(gpu_cam_minimal_node PROPERTIES
     CUDA_ARCHITECTURES "87"
 )
