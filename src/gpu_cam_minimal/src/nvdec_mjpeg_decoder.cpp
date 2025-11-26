@@ -3,6 +3,10 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
+#include <limits>
 #include <cstring>
 #include <unistd.h>
 
@@ -58,53 +62,91 @@ bool ensure_cuda_initialized()
     return initialized;
 }
 
-bool ensure_cuda_context()
+CUcontext get_shared_cuda_context()
 {
     if (!ensure_cuda_initialized()) {
-        return false;
-    }
-
-    CUcontext current = nullptr;
-    CUresult get_result = cuCtxGetCurrent(&current);
-    if (get_result == CUDA_SUCCESS && current != nullptr) {
-        return true;
+        return nullptr;
     }
 
     static std::once_flag ctx_flag;
     static CUcontext shared_ctx = nullptr;
+    static CUdevice shared_device{};
     static CUresult ctx_result = CUDA_ERROR_NOT_INITIALIZED;
     std::call_once(ctx_flag, []() {
         CUdevice dev{};
         ctx_result = cuDeviceGet(&dev, 0);
         if (ctx_result == CUDA_SUCCESS) {
-            ctx_result = cuCtxCreate(&shared_ctx, CU_CTX_SCHED_AUTO, dev);
+            shared_device = dev;
+            CUresult flag_result = cuDevicePrimaryCtxSetFlags(dev, CU_CTX_SCHED_AUTO);
+            if (flag_result != CUDA_SUCCESS && flag_result != CUDA_ERROR_PRIMARY_CONTEXT_ACTIVE) {
+                ctx_result = flag_result;
+            }
+        }
+        if (ctx_result == CUDA_SUCCESS) {
+            ctx_result = cuDevicePrimaryCtxRetain(&shared_ctx, shared_device);
+        }
+        if (ctx_result != CUDA_SUCCESS) {
+            const char* err_name = nullptr;
+            const char* err_str = nullptr;
+            (void)cuGetErrorName(ctx_result, &err_name);
+            (void)cuGetErrorString(ctx_result, &err_str);
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to access CUDA primary context: %s (%s)",
+                                    err_name ? err_name : "UNKNOWN",
+                                    err_str ? err_str : "no description");
         }
     });
     if (ctx_result != CUDA_SUCCESS || shared_ctx == nullptr) {
-        const char* err_name = nullptr;
-        const char* err_str = nullptr;
-        (void)cuGetErrorName(ctx_result, &err_name);
-        (void)cuGetErrorString(ctx_result, &err_str);
-        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to create CUDA context: %s (%s)",
-                                err_name ? err_name : "UNKNOWN",
-                                err_str ? err_str : "no description");
-        return false;
+        return nullptr;
     }
-
-    CUresult set_result = cuCtxSetCurrent(shared_ctx);
-    if (set_result != CUDA_SUCCESS) {
-        const char* err_name = nullptr;
-        const char* err_str = nullptr;
-        (void)cuGetErrorName(set_result, &err_name);
-        (void)cuGetErrorString(set_result, &err_str);
-        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "cuCtxSetCurrent failed: %s (%s)",
-                                err_name ? err_name : "UNKNOWN",
-                                err_str ? err_str : "no description");
-        return false;
-    }
-
-    return true;
+    return shared_ctx;
 }
+
+class ScopedCudaContext
+{
+public:
+    ScopedCudaContext()
+    {
+        CUcontext ctx = get_shared_cuda_context();
+        if (!ctx) {
+            return;
+        }
+        CUresult res = cuCtxPushCurrent(ctx);
+        if (res == CUDA_SUCCESS) {
+            active_ = true;
+        } else {
+            const char* err_name = nullptr;
+            const char* err_str = nullptr;
+            (void)cuGetErrorName(res, &err_name);
+            (void)cuGetErrorString(res, &err_str);
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "cuCtxPushCurrent failed: %s (%s)",
+                                    err_name ? err_name : "UNKNOWN",
+                                    err_str ? err_str : "no description");
+        }
+    }
+
+    ~ScopedCudaContext()
+    {
+        if (!active_) {
+            return;
+        }
+        CUcontext popped{};
+        CUresult res = cuCtxPopCurrent(&popped);
+        if (res != CUDA_SUCCESS) {
+            const char* err_name = nullptr;
+            const char* err_str = nullptr;
+            (void)cuGetErrorName(res, &err_name);
+            (void)cuGetErrorString(res, &err_str);
+            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "cuCtxPopCurrent failed: %s (%s)",
+                                    err_name ? err_name : "UNKNOWN",
+                                    err_str ? err_str : "no description");
+        }
+    }
+
+    bool valid() const { return active_; }
+
+private:
+    bool active_{false};
+};
 
 } // namespace
 
@@ -142,6 +184,10 @@ struct NvdecMjpegDecoder::Impl {
     bool out_in_use[2]{false, false};
     int frames_fed{0}; // 已喂给 NVDEC 的输出帧数量，用于无事件回退策略
     uint32_t capture_pixfmt{0};
+    std::thread output_reclaim_thread;
+    std::atomic<bool> output_reclaim_stop{false};
+    std::mutex output_plane_mutex;
+    std::condition_variable output_plane_cv;
 
     // EGL / CUDA helper
     PFNEGLCREATEIMAGEKHRPROC  eglCreateImageKHR{nullptr};
@@ -171,6 +217,8 @@ struct NvdecMjpegDecoder::Impl {
     NvBufSurfaceColorFormat resolve_capture_color_format(uint32_t pixfmt) const;
     bool requeue_capture_buffer(v4l2_buffer &cbuf);
     int get_capture_dmabuf_fd(uint32_t index) const;
+    void start_output_reclaim_thread();
+    void stop_output_reclaim_thread();
 
     static bool set_v4l2_mjpeg(int fd, int w, int h, double f)
     {
@@ -291,6 +339,54 @@ int NvdecMjpegDecoder::Impl::get_capture_dmabuf_fd(uint32_t index) const
     return capture_dmabuf_fds[index];
 }
 
+void NvdecMjpegDecoder::Impl::start_output_reclaim_thread()
+{
+    if (output_reclaim_thread.joinable() || !dec) {
+        return;
+    }
+    output_reclaim_stop.store(false);
+    output_reclaim_thread = std::thread([this]() {
+        while (!output_reclaim_stop.load()) {
+            v4l2_buffer obuf{}; v4l2_plane oplanes[VIDEO_MAX_PLANES]{};
+            obuf.m.planes = oplanes;
+            if (!dec) {
+                break;
+            }
+            int ret = dec->output_plane.dqBuffer(obuf, nullptr, nullptr, std::numeric_limits<uint32_t>::max());
+            if (ret < 0) {
+                if (output_reclaim_stop.load()) {
+                    break;
+                }
+                if (!dec->output_plane.getStreamStatus()) {
+                    break;
+                }
+                if (errno == EAGAIN) {
+                    continue;
+                }
+                RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Output reclaim thread dqBuffer failed (errno=%d)", errno);
+                continue;
+            }
+            if (static_cast<size_t>(obuf.index) < 2) {
+                std::lock_guard<std::mutex> lock(output_plane_mutex);
+                out_in_use[obuf.index] = false;
+            }
+            output_plane_cv.notify_all();
+        }
+    });
+}
+
+void NvdecMjpegDecoder::Impl::stop_output_reclaim_thread()
+{
+    if (!output_reclaim_thread.joinable()) {
+        output_reclaim_stop.store(false);
+        return;
+    }
+    output_reclaim_stop.store(true);
+    output_plane_cv.notify_all();
+    output_reclaim_thread.join();
+    output_reclaim_stop.store(false);
+}
+
 // Helper: feed compressed JPEG data into NVDEC output plane, configure capture plane if needed,
 // and dequeue one decoded buffer from capture plane. Returns true and fills cap_nvbuf/cbuf on success.
 bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vbuf,
@@ -307,22 +403,34 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
         return false;
     }
 
-    if (out_in_use[idx]) {
-        v4l2_buffer obuf{}; v4l2_plane oplanes[VIDEO_MAX_PLANES]{}; obuf.m.planes = oplanes;
-        if (dec->output_plane.dqBuffer(obuf, nullptr, nullptr, -1) < 0) {
-            RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to dq from output plane.");
-            (void)v4l2_ioctl(v4l2_fd, VIDIOC_QBUF, &cam_vbuf);
-            return false;
+    auto release_output_slot = [this](int slot) {
+        if (slot < 0 || slot >= 2) {
+            return;
         }
-        if (static_cast<size_t>(obuf.index) < 2) {
-            out_in_use[obuf.index] = false;
+        {
+            std::lock_guard<std::mutex> lock(output_plane_mutex);
+            out_in_use[slot] = false;
         }
+        output_plane_cv.notify_all();
+    };
+
+    {
+        std::unique_lock<std::mutex> lock(output_plane_mutex);
+        if (out_in_use[idx]) {
+            constexpr auto wait_duration = std::chrono::milliseconds(10);
+            if (!output_plane_cv.wait_for(lock, wait_duration, [this, idx]() { return !out_in_use[idx]; })) {
+                (void)v4l2_ioctl(v4l2_fd, VIDIOC_QBUF, &cam_vbuf);
+                return false;
+            }
+        }
+        out_in_use[idx] = true;
     }
 
     // get NvBuffer for output plane and copy compressed JPEG into it
     NvBuffer* out_nvbuf = dec->output_plane.getNthBuffer(idx);
     if (!out_nvbuf) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to get NvBuffer from output plane (idx=%d).", idx);
+        release_output_slot(idx);
         (void)v4l2_ioctl(v4l2_fd, VIDIOC_QBUF, &cam_vbuf);
         return false;
     }
@@ -353,6 +461,7 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
     if (copy_len > static_cast<size_t>(out_nvbuf->planes[0].length)) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Encoded JPEG too large for output buffer: %zu > %u",
                                copy_len, out_nvbuf->planes[0].length);
+        release_output_slot(idx);
         (void)v4l2_ioctl(v4l2_fd, VIDIOC_QBUF, &cam_vbuf);
         return false;
     }
@@ -367,10 +476,10 @@ bool NvdecMjpegDecoder::Impl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_
     obuf.m.planes[0].bytesused = static_cast<uint32_t>(copy_len);
     if (dec->output_plane.qBuffer(obuf, nullptr) < 0) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to queue buffer to decoder output plane.");
+        release_output_slot(idx);
         (void)v4l2_ioctl(v4l2_fd, VIDIOC_QBUF, &cam_vbuf);
         return false;
     }
-    out_in_use[idx] = true;
     out_next_idx = 1 - out_next_idx;
 
     // requeue camera buffer immediately
@@ -513,7 +622,8 @@ bool NvdecMjpegDecoder::Impl::convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_b
         return false;
     }
 
-    if (!ensure_cuda_context()) {
+    ScopedCudaContext ctx_guard;
+    if (!ctx_guard.valid()) {
         eglDestroyImageKHR(egl_display, egl_image);
         unmap_egl_image();
         (void)requeue_capture_buffer(cbuf);
@@ -748,6 +858,8 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
     // 开启 OUTPUT 流（必须在 capture 前）
     if (impl_->dec->output_plane.setStreamStatus(true) < 0)
         RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "output_plane.streamon failed");
+    else
+        impl_->start_output_reclaim_thread();
 
     // ---- EGL 初始化 ----
     impl_->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -814,9 +926,8 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
             if ((errno == EINVAL || errno == EIO || errno == EAGAIN) && impl_->frames_fed <= max_try) {
                 RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "JPEG: waiting decoder to finalize format (try %d/%d, errno=%d)", impl_->frames_fed, max_try, errno);
                 usleep(1500);
-                return true; // 按旧逻辑：不算失败，驱动/解码器还在就绪中
-            }
-            if (impl_->frames_fed > max_try) {
+                errno = EAGAIN;
+            } else if (impl_->frames_fed > max_try) {
                 RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "JPEG: capture_plane.getFormat failed after %d tries: %s", impl_->frames_fed, strerror(errno));
             }
         }
@@ -852,6 +963,7 @@ void NvdecMjpegDecoder::close_decoder()
         impl_->dec->capture_plane.deinitPlane();
 
         impl_->dec->output_plane.setStreamStatus(false);
+        impl_->stop_output_reclaim_thread();
         impl_->dec->output_plane.deinitPlane();
 
         delete impl_->dec;

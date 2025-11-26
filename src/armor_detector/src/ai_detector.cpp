@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
 #include <fstream>
 #include <cstring>
 #include <stdexcept>
@@ -52,11 +53,36 @@ inline size_t computeSize(const nvinfer1::Dims& d)
     return vol;
 }
 
+inline int parseCudaDeviceId(const std::string& device)
+{
+    if (device.empty() || device == "GPU") {
+        return 0;
+    }
+    if (device.rfind("GPU", 0) == 0) {
+        auto pos = device.find(':');
+        if (pos != std::string::npos && pos + 1 < device.size()) {
+            try {
+                return std::stoi(device.substr(pos + 1));
+            } catch (...) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+    try {
+        return std::stoi(device);
+    } catch (...) {
+        return 0;
+    }
+}
+
 }  // namespace
 
-AIDetector::AIDetector(const std::string& model_path, const std::string&, float conf_th, float nms_th)
+AIDetector::AIDetector(const std::string& model_path, const std::string& device, float conf_th, float nms_th)
     : conf_threshold_(conf_th), nms_threshold_(nms_th)
 {
+    cuda_device_id_ = parseCudaDeviceId(device);
+    checkCuda(cudaSetDevice(cuda_device_id_), "cudaSetDevice");
     input_shape = {1, IMAGE_HEIGHT, IMAGE_WIDTH, 3};
 
     int device_count = 0;
@@ -133,6 +159,10 @@ AIDetector::AIDetector(const std::string& model_path, const std::string&, float 
 
 AIDetector::~AIDetector()
 {
+    if (cudaSetDevice(cuda_device_id_) != cudaSuccess) {
+        std::cerr << "[AIDetector] cudaSetDevice(" << cuda_device_id_ << ") failed during destruction" << std::endl;
+        return;
+    }
     if (input_device_buffer_) cudaFree(input_device_buffer_);
     if (output_device_buffer_) cudaFree(output_device_buffer_);
     
@@ -160,6 +190,7 @@ std::vector<Armor> AIDetector::detect(const cv::cuda::GpuMat& gpu_img, int color
 
 void AIDetector::infer(const cv::cuda::GpuMat& gpu_rgb8, int detect_color)
 {
+    checkCuda(cudaSetDevice(cuda_device_id_), "cudaSetDevice");
     // 清理结果
     objects_.clear();
     tmp_objects_.clear();

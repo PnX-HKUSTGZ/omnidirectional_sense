@@ -22,6 +22,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/cudaimgproc.hpp>
+#include <cuda_runtime_api.h>
 
 // 新的 NVDEC 封装
 #include "gpu_cam_minimal/nvdec_mjpeg_decoder.hpp"
@@ -60,6 +61,9 @@ public:
     control_params_.backlight_compensation = this->declare_parameter<int>("backlight_compensation", 0);
     control_params_.auto_exposure = this->declare_parameter<int>("auto_exposure", 3);
     control_params_.exposure_time_absolute = this->declare_parameter<int>("exposure_time_absolute", 313);
+    cuda_device_id_ = this->declare_parameter<int>("cuda_device_id", 0);
+
+    initializeCudaDevice();
 
     // Publishers to match usb_cam external topics
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", rclcpp::SensorDataQoS());
@@ -84,6 +88,17 @@ public:
   }
 
 private:
+  bool openCpuCapture();
+  void handleNvdecFailure(const std::string& reason);
+  void fallbackToCpuCapture(const std::string& reason);
+  void initializeCudaDevice()
+  {
+    auto err = cudaSetDevice(cuda_device_id_);
+    if (err != cudaSuccess) {
+      RCLCPP_FATAL(get_logger(), "cudaSetDevice(%d) failed: %s", cuda_device_id_, cudaGetErrorString(err));
+      throw std::runtime_error("Failed to initialize CUDA device context");
+    }
+  }
   void openCamera()
   {
     // Try to use Jetson NVDEC path for MJPEG -> NV12 -> RGB on GPU
@@ -103,38 +118,9 @@ private:
     }
 
     if (!use_hw_mjpeg_) {
-      // Map video_device to numeric id if possible (e.g., /dev/video0 -> 0)
-      int device_id = parse_device_id(video_device_);
-      // Prefer V4L2 backend on Linux
-      cap_.open(device_id, cv::CAP_V4L2);
-      if (!cap_.isOpened()) {
-        RCLCPP_ERROR(get_logger(), "Failed to open camera device %s (id=%d)", video_device_.c_str(), device_id);
+      if (!openCpuCapture()) {
         throw std::runtime_error("camera open failed");
       }
-
-      // Enforce MJPG if requested (best-effort)
-      if (pixel_format_ == "mjpeg" || pixel_format_ == "MJPG") {
-        bool ok = cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
-        RCLCPP_INFO(get_logger(), "Request MJPG pixel format: %s", ok ? "OK" : "Not supported by backend");
-      } else {
-        RCLCPP_WARN(get_logger(), "Only 'mjpeg' pixel_format is supported by gpu_cam_minimal; got '%s'", pixel_format_.c_str());
-      }
-
-      if (image_width_ > 0) cap_.set(cv::CAP_PROP_FRAME_WIDTH, image_width_);
-      if (image_height_ > 0) cap_.set(cv::CAP_PROP_FRAME_HEIGHT, image_height_);
-      if (framerate_ > 0.0) cap_.set(cv::CAP_PROP_FPS, framerate_);
-
-      // Read back actual settings
-      image_width_ = static_cast<int>(cap_.get(cv::CAP_PROP_FRAME_WIDTH));
-      image_height_ = static_cast<int>(cap_.get(cv::CAP_PROP_FRAME_HEIGHT));
-      framerate_ = cap_.get(cv::CAP_PROP_FPS);
-
-      RCLCPP_INFO(get_logger(), "Camera opened (OpenCV): %dx%d @ %.1f fps (%s)", image_width_, image_height_, framerate_, video_device_.c_str());
-    }
-    if (!use_hw_mjpeg_) {
-      // Pre-allocate GPU buffer with expected size and type (we expect 8UC3 from OpenCV)
-      d_frame_rgb_ = cv::cuda::GpuMat(image_height_, image_width_, CV_8UC3);
-      RCLCPP_INFO(get_logger(), "OpenCV CUDA detected: will upload frames to GPU (mode=%s)", publish_mode_.c_str());
     } else {
       RCLCPP_INFO(get_logger(), "OpenCV CUDA detected: using Jetson NVDEC path for MJPEG");
     }
@@ -149,6 +135,7 @@ private:
       cinfo_mgr_->setCameraInfo(ci);
     }
   }
+
 
   void apply_camera_controls()
   {
@@ -235,11 +222,18 @@ private:
       struct timeval capture_tv{};
       bool ts_monotonic = false;
       if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb, &capture_tv, &ts_monotonic)) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "NVDEC read/decode failed");
+        handleNvdecFailure("read/decode failed");
+        RCLCPP_INFO(get_logger(), "read/decode failed");
         return;
       }
+      if (gpu_rgb.empty()) {
+        handleNvdecFailure("GPU RGB frame is empty");
+        return;
+      }
+      nvdec_failure_count_ = 0;
       timestamp = convert_v4l2_timestamp(capture_tv, ts_monotonic);
     } else {
+      nvdec_failure_count_ = 0;
       timestamp = this->now();
       if (!cap_.read(frame_bgr)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed to read frame");
@@ -350,7 +344,10 @@ private:
   std::string video_device_;
   std::string publish_mode_;
   std::string pixel_format_;
+  int cuda_device_id_{0};
   bool debug_enabled_ {false};
+  static constexpr int kNvdecFailureThreshold = 40;
+  int nvdec_failure_count_{0};
   struct CameraControlParams {
     int brightness {0};
     int contrast {32};
@@ -402,6 +399,70 @@ private:
   }
 
 };
+
+bool GpuCamMinimalNode::openCpuCapture()
+{
+  int device_id = parse_device_id(video_device_);
+  cap_.release();
+  cap_.open(device_id, cv::CAP_V4L2);
+  if (!cap_.isOpened()) {
+    RCLCPP_ERROR(get_logger(), "Failed to open camera device %s (id=%d)", video_device_.c_str(), device_id);
+    return false;
+  }
+
+  if (pixel_format_ == "mjpeg" || pixel_format_ == "MJPG") {
+    bool ok = cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
+    RCLCPP_INFO(get_logger(), "Request MJPG pixel format: %s", ok ? "OK" : "Not supported by backend");
+  } else {
+    RCLCPP_WARN(get_logger(), "Only 'mjpeg' pixel_format is supported by gpu_cam_minimal; got '%s'", pixel_format_.c_str());
+  }
+
+  if (image_width_ > 0) cap_.set(cv::CAP_PROP_FRAME_WIDTH, image_width_);
+  if (image_height_ > 0) cap_.set(cv::CAP_PROP_FRAME_HEIGHT, image_height_);
+  if (framerate_ > 0.0) cap_.set(cv::CAP_PROP_FPS, framerate_);
+
+  image_width_ = static_cast<int>(cap_.get(cv::CAP_PROP_FRAME_WIDTH));
+  image_height_ = static_cast<int>(cap_.get(cv::CAP_PROP_FRAME_HEIGHT));
+  framerate_ = cap_.get(cv::CAP_PROP_FPS);
+
+  d_frame_rgb_.release();
+  d_frame_rgb_ = cv::cuda::GpuMat(image_height_, image_width_, CV_8UC3);
+
+  RCLCPP_INFO(get_logger(), "Camera opened (OpenCV): %dx%d @ %.1f fps (%s)", image_width_, image_height_, framerate_, video_device_.c_str());
+  RCLCPP_INFO(get_logger(), "OpenCV CUDA detected: will upload frames to GPU (mode=%s)", publish_mode_.c_str());
+  return true;
+}
+
+void GpuCamMinimalNode::handleNvdecFailure(const std::string& reason)
+{
+  ++nvdec_failure_count_;
+  RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                       "NVDEC failure (%d/%d): %s",
+                       nvdec_failure_count_, kNvdecFailureThreshold, reason.c_str());
+  if (nvdec_failure_count_ >= kNvdecFailureThreshold) {
+    fallbackToCpuCapture("Exceeded NVDEC failure threshold. Last error: " + reason);
+  }
+}
+
+void GpuCamMinimalNode::fallbackToCpuCapture(const std::string& reason)
+{
+  if (!use_hw_mjpeg_) {
+    return;
+  }
+
+  RCLCPP_ERROR(get_logger(), "Disabling NVDEC path: %s. Falling back to OpenCV pipeline.", reason.c_str());
+  if (nvdec_) {
+    nvdec_->close_decoder();
+    nvdec_.reset();
+  }
+  use_hw_mjpeg_ = false;
+  nvdec_failure_count_ = 0;
+
+  if (!openCpuCapture()) {
+    RCLCPP_FATAL(get_logger(), "CPU fallback failed to open device %s; shutting down.", video_device_.c_str());
+    rclcpp::shutdown();
+  }
+}
 
 #ifndef GPU_CAM_MINIMAL_COMPONENT_ONLY
 int main(int argc, char ** argv)

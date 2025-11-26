@@ -156,6 +156,8 @@ private:
     int original_width_;   ///< 原始图像宽度
     int original_height_;  ///< 原始图像高度
 
+    int cuda_device_id_{0}; ///< CUDA 设备编号，确保与图像来源一致
+
     // 检测结果
     std::vector<Object> objects_;      ///< 原始检测对象
     std::vector<Object> tmp_objects_;  ///< NMS 后的检测对象
