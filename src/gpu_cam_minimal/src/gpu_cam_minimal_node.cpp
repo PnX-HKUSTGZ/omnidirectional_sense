@@ -33,8 +33,8 @@ using namespace std::chrono_literals;
 
 class GpuCamMinimalNode : public rclcpp::Node {
 public:
-  GpuCamMinimalNode()
-  : Node("gpu_cam_minimal")
+  explicit GpuCamMinimalNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
+  : Node("gpu_cam_minimal", options)
   {
     // Parameters
     camera_name_ = this->declare_parameter<std::string>("camera_name", "cam_0");
@@ -408,7 +408,7 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    auto node = std::make_shared<GpuCamMinimalNode>();
+    auto node = std::make_shared<GpuCamMinimalNode>(rclcpp::NodeOptions{});
     rclcpp::spin(node);
   } catch (const std::exception & e) {
     RCLCPP_FATAL(rclcpp::get_logger("gpu_cam_minimal"), "Exception: %s", e.what());

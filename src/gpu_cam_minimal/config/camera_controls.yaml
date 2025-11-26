@@ -11,5 +11,5 @@ gpu_cam_minimal:
     white_balance_temperature: 4600
     sharpness: 32
     backlight_compensation: 0
-    auto_exposure: 3
-    exposure_time_absolute: 313
+    auto_exposure: 1
+    exposure_time_absolute: 100
