@@ -224,6 +224,9 @@ void AIDetector::infer(const cv::cuda::GpuMat& gpu_rgb8, int detect_color)
     checkCuda(cudaMemsetAsync(device_post_count_, 0, sizeof(int), stream_), "Memset post_count");
 
     // 后处理固定走 FP32
+    // 由于模型训练时的问题，红蓝反了。
+    if (detect_color == 0) detect_color = 1; 
+    else if (detect_color == 1) detect_color = 0; 
     launch_postprocess_fp32(static_cast<const float*>(output_device_buffer_), num_det, conf_threshold_,
                             detect_color, sx, sy,
                             static_cast<PostDet*>(device_post_dets_), max_post_out_, device_post_count_,

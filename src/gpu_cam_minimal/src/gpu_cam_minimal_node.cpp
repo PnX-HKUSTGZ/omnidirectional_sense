@@ -223,7 +223,6 @@ private:
       bool ts_monotonic = false;
       if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb, &capture_tv, &ts_monotonic)) {
         handleNvdecFailure("read/decode failed");
-        RCLCPP_INFO(get_logger(), "read/decode failed");
         return;
       }
       if (gpu_rgb.empty()) {
@@ -346,7 +345,7 @@ private:
   std::string pixel_format_;
   int cuda_device_id_{0};
   bool debug_enabled_ {false};
-  static constexpr int kNvdecFailureThreshold = 40;
+  static constexpr int kNvdecFailureThreshold = -1;
   int nvdec_failure_count_{0};
   struct CameraControlParams {
     int brightness {0};
@@ -439,7 +438,7 @@ void GpuCamMinimalNode::handleNvdecFailure(const std::string& reason)
   RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                        "NVDEC failure (%d/%d): %s",
                        nvdec_failure_count_, kNvdecFailureThreshold, reason.c_str());
-  if (nvdec_failure_count_ >= kNvdecFailureThreshold) {
+  if (nvdec_failure_count_ >= kNvdecFailureThreshold && kNvdecFailureThreshold != -1) {
     fallbackToCpuCapture("Exceeded NVDEC failure threshold. Last error: " + reason);
   }
 }

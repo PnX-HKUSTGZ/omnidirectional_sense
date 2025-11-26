@@ -14,6 +14,7 @@
   <depend>rm_gimbal_description</depend>
   <depend>foxglove_bridge</depend>
   <depend>video_reader</depend>
+  <depend>gpu_cam_minimal</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

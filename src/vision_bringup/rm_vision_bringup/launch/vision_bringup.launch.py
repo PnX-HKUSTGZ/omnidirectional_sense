@@ -143,9 +143,9 @@ def generate_launch_description():
         robot_state_publishers.append(robot_state_pub)
 
 
-    # 串口节点在最后一个容器启动后1.5秒启动 (2.0 + 3*1.0 + 1.5 = 6.5秒)
+    # 串口节点在第一个容器启动后1.5秒启动 (2.0 + 1.5 = 3.5秒)
     delay_serial_node = TimerAction(
-        period=6.5,
+        period=3.5,
         actions=[serial_driver_node],
     )
 

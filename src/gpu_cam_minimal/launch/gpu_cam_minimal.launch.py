@@ -21,7 +21,7 @@ def generate_launch_description():
             'framerate': 30.0,
             'image_width': 1920,
             'image_height': 1080,
-            'video_device': '/dev/video0',
+            'video_device': '/dev/video1',
             'debug': True,
         }
     ]

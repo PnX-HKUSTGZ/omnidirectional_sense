@@ -2,10 +2,10 @@ camera: hik
 
 # 相机设备映射 (USB相机的 /dev/video 设备路径)
 camera_devices:
-  0: "/dev/video0"
-  1: "/dev/video2"
-  2: "/dev/video4"
-  3: "/dev/video6"
+  0: "/dev/video1"
+  1: "/dev/video3"
+  2: "/dev/video5"
+  3: "/dev/video7"
 
 # 四个摄像头的 TF 参数配置
 # cam0: 前方摄像头

@@ -7,7 +7,7 @@
     image_width: 1920
     image_height: 1080
     camera_info_url: "package://rm_vision_bringup/config/camera_info.yaml"
-    debug: true
+    debug: false
     brightness: 0
     contrast: 32
     saturation: 64
