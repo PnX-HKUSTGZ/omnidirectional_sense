@@ -79,7 +79,7 @@ public:
         last_param_ = param;
         std::lock_guard<std::mutex> lk(detectors_mutex_);
         if (detector_param_clients_.empty()) {
-            RCLCPP_WARN(get_logger(), "No detector param clients found yet, will retry automatically");
+            RCLCPP_WARN_THROTTLE(get_logger(), *this->get_clock(), 500, "No detector param clients found yet, will retry automatically");
             return;
         }
         for (auto & kv : detector_param_clients_) {
