@@ -85,6 +85,7 @@ check_include_file_cxx("opencv2/core/cuda.hpp" HAVE_OPENCV_CUDA)
 set(GPU_CAM_NODE_SRC src/${PROJECT_NAME}_node.cpp)
 set(GPU_CAM_COMMON_SRC
   src/nvdec_mjpeg_decoder.cpp
+  src/nvdec_mjpeg_decoder_impl.cpp
   src/yuv2rgb.cu
 )
 

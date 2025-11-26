@@ -9,6 +9,8 @@
 
 namespace gpu_cam_minimal {
 
+class NvdecMjpegDecoderImpl;
+
 // 简单的 Jetson MJPEG→NV12→RGB(GPU) 解码器包装。
 // 头文件不做条件编译，实际可用性由实现文件中的 is_supported() 和 open() 返回值决定。
 class NvdecMjpegDecoder {
@@ -35,8 +37,7 @@ public:
   static bool is_supported();
 
 private:
-  struct Impl;
-  std::unique_ptr<Impl> impl_;
+  std::unique_ptr<NvdecMjpegDecoderImpl> impl_;
 };
 
 } // namespace gpu_cam_minimal
