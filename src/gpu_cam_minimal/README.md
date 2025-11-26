@@ -31,3 +31,7 @@ ros2 run gpu_cam_minimal gpu_cam_minimal_node --ros-args -p device_id:=0 -p widt
 Notes:
 - If OpenCV was built without CUDA, the node still runs and publishes images, but logs a warning and skips GPU upload.
 - The published `sensor_msgs/Image` uses `rgb8`, converting from the camera driver's default ordering when necessary.
+
+## problems
+- high delay
+- When one frame goes black, all subsequent frames are black

@@ -4,6 +4,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <chrono>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -61,12 +63,13 @@ public:
     bool out_in_use[2]{false, false};
     int frames_fed{0};
     uint32_t capture_pixfmt{0};
-    std::thread output_reclaim_thread;
+    std::future<void> output_reclaim_future;
     std::atomic<bool> output_reclaim_stop{false};
     std::mutex output_plane_mutex;
     std::condition_variable output_plane_cv;
     PFNEGLCREATEIMAGEKHRPROC  eglCreateImageKHR{nullptr};
     PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR{nullptr};
+    std::chrono::steady_clock::time_point last_capture_init_log{std::chrono::steady_clock::time_point::min()};
 };
 
 } // namespace gpu_cam_minimal

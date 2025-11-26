@@ -222,7 +222,8 @@ private:
       struct timeval capture_tv{};
       bool ts_monotonic = false;
       if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb, &capture_tv, &ts_monotonic)) {
-        handleNvdecFailure("read/decode failed");
+        int err = errno; 
+        handleNvdecFailure("read/decode failed (errno=" + std::string(strerror(err)) + ")");
         return;
       }
       if (gpu_rgb.empty()) {

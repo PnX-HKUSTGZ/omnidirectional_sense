@@ -36,7 +36,7 @@
 #include <NvBuffer.h>
 #include "NvBufSurface.h"
 #include "gpu_cam_minimal/yuv2rgb.cuh"
-#include "nvdec_mjpeg_decoder_impl.hpp"
+#include "gpu_cam_minimal/nvdec_mjpeg_decoder_impl.hpp"
 
 namespace gpu_cam_minimal {
 
@@ -221,17 +221,6 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
     v4l2_plane cplanes[VIDEO_MAX_PLANES]{}; cbuf.m.planes = cplanes;
     NvBuffer* cap_nvbuf = nullptr;
     if (!impl_->feed_decoder_and_dequeue_capture(vbuf, cam_data, cam_len, cap_nvbuf, cbuf)) {
-        // 与旧实现保持一致：若还未完成 capture 配置，前若干次（<=10）在常见 errno 下短暂等待并返回 true 让上层继续循环
-        if (!impl_->capture_configured) {
-            const int max_try = 10;
-            if ((errno == EINVAL) && impl_->frames_fed <= max_try) {
-                RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "JPEG: waiting decoder to finalize format (try %d/%d, errno=%d)", impl_->frames_fed, max_try, errno);
-                usleep(1500);
-                errno = EAGAIN;
-            } else if (impl_->frames_fed > max_try) {
-                RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "JPEG: capture_plane.getFormat failed after %d tries: %s", impl_->frames_fed, strerror(errno));
-            }
-        }
         return false;
     }
 
