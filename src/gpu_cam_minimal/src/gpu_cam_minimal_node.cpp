@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <thread>
+#include <mutex>
 
 #include <armor_detector/gpu_image_type_adapter.hpp>
 #include <cuda_runtime_api.h>
@@ -372,6 +373,8 @@ void GpuCamMinimalNode::publishFrame(const cv::cuda::GpuMat & gpu_rgb, const cv:
     cam_info_pub_->publish(ci);
   }
 
+  const auto publish_time = this->now();
+  updateDebugStats(timestamp, publish_time);
   publishDebugImage(ci, gpu_rgb, cpu_rgb);
 }
 
@@ -405,6 +408,36 @@ void GpuCamMinimalNode::publishDebugImage(const sensor_msgs::msg::CameraInfo & i
   debug_msg.data.resize(debug_size);
   std::memcpy(debug_msg.data.data(), src_cpu->data, debug_size);
   debug_image_pub_->publish(debug_msg);
+}
+
+void GpuCamMinimalNode::updateDebugStats(const rclcpp::Time & capture_ts, const rclcpp::Time & publish_ts)
+{
+  if (!debug_enabled_) {
+    return;
+  }
+
+  const double latency_ms = static_cast<double>((publish_ts - capture_ts).nanoseconds()) / 1e6;
+  std::lock_guard<std::mutex> lock(debug_stats_mutex_);
+  if (debug_window_start_.nanoseconds() == 0) {
+    debug_window_start_ = publish_ts;
+    debug_window_frames_ = 0;
+    debug_window_latency_ms_ = 0.0;
+  }
+
+  debug_window_frames_ += 1;
+  debug_window_latency_ms_ += latency_ms;
+
+  const double window_ms = static_cast<double>((publish_ts - debug_window_start_).nanoseconds()) / 1e6;
+  if (window_ms >= 1000.0) {
+    const double avg_latency = debug_window_frames_ > 0 ? debug_window_latency_ms_ / debug_window_frames_ : 0.0;
+    const double fps = (window_ms > 0.0) ? (debug_window_frames_ * 1000.0 / window_ms) : 0.0;
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+      "debug stats: fps=%.2f avg_latency=%.2f ms over %.0f ms",
+      fps, avg_latency, window_ms);
+    debug_window_start_ = publish_ts;
+    debug_window_frames_ = 0;
+    debug_window_latency_ms_ = 0.0;
+  }
 }
 
 int GpuCamMinimalNode::parse_device_id(const std::string & dev)

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <linux/videodev2.h>
@@ -45,6 +46,7 @@ private:
   void publishFrame(const cv::cuda::GpuMat & gpu_rgb, const cv::Mat * cpu_rgb, const rclcpp::Time & timestamp);
   void publishDebugImage(const sensor_msgs::msg::CameraInfo & info, const cv::cuda::GpuMat & gpu_rgb,
                         const cv::Mat * cpu_rgb);
+  void updateDebugStats(const rclcpp::Time & capture_ts, const rclcpp::Time & publish_ts);
   static int parse_device_id(const std::string & dev);
 
   // usb_cam-aligned params
@@ -101,4 +103,8 @@ private:
   std::thread nvdec_thread_;
   std::atomic<bool> nvdec_thread_running_{false};
   std::atomic<bool> nvdec_thread_stop_{false};
+  std::mutex debug_stats_mutex_;
+  rclcpp::Time debug_window_start_;
+  size_t debug_window_frames_{0};
+  double debug_window_latency_ms_{0.0};
 };

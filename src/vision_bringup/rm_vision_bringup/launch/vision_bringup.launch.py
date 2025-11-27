@@ -105,6 +105,7 @@ def generate_launch_description():
         cam_image_remaps = [
             ('/image_gpu', f'{cam_ns}/image_gpu'),
             ('/camera_info', f'{cam_ns}/camera_info'),
+            ('/debug_image_raw', f'{cam_ns}/debug_image_raw'),
         ]
         detector_remaps = [
             # subscriptions
