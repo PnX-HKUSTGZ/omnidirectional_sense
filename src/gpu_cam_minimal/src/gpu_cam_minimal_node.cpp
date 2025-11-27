@@ -32,8 +32,8 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
   publish_mode_ = "gpu"; // fixed mode
   pixel_format_ = "mjpeg"; // pipeline assumes MJPEG input
   debug_enabled_ = this->declare_parameter<bool>("debug", false);
-  nvdec_v4l2_buffer_count_ = this->declare_parameter<int>("nvdec_v4l2_buffer_count", 3);
-  nvdec_capture_buffer_padding_ = this->declare_parameter<int>("nvdec_capture_buffer_padding", 1);
+  nvdec_v4l2_buffer_count_ = this->declare_parameter<int>("nvdec_v4l2_buffer_count", 4);
+  nvdec_capture_buffer_padding_ = this->declare_parameter<int>("nvdec_capture_buffer_padding", 2);
   nvdec_drop_late_frames_ = this->declare_parameter<bool>("nvdec_drop_late_frames", true);
   control_params_.brightness = this->declare_parameter<int>("brightness", 0);
   control_params_.contrast = this->declare_parameter<int>("contrast", 32);
@@ -99,8 +99,8 @@ void GpuCamMinimalNode::openCamera()
   if (use_hw_mjpeg_) {
     nvdec_ = std::make_unique<gpu_cam_minimal::NvdecMjpegDecoder>();
     gpu_cam_minimal::NvdecMjpegDecoder::Config config;
-    config.v4l2_buffer_count = static_cast<uint32_t>(std::max(2, nvdec_v4l2_buffer_count_));
-    config.capture_buffer_padding = static_cast<uint32_t>(std::max(1, nvdec_capture_buffer_padding_));
+    config.v4l2_buffer_count = static_cast<uint32_t>(std::max(4, nvdec_v4l2_buffer_count_));
+    config.capture_buffer_padding = static_cast<uint32_t>(std::max(2, nvdec_capture_buffer_padding_));
     config.drop_late_frames = nvdec_drop_late_frames_;
     nvdec_->set_config(config);
     if (!nvdec_->open(video_device_, image_width_, image_height_, framerate_)) {

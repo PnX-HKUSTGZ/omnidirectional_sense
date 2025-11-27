@@ -23,6 +23,10 @@ def generate_launch_description():
             'image_height': 1080,
             'video_device': '/dev/video1',
             'debug': True,
+            # NVDEC low-latency tuning knobs
+            'nvdec_v4l2_buffer_count': 4,
+            'nvdec_capture_buffer_padding': 2,
+            'nvdec_drop_late_frames': True,
         }
     ]
 

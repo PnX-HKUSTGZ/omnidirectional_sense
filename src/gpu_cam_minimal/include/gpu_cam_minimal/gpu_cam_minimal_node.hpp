@@ -18,6 +18,7 @@
 #include <opencv2/core/cuda.hpp>
 
 #include <armor_detector/gpu_image.hpp>
+#include <armor_detector/gpu_image_type_adapter.hpp>
 
 #include "gpu_cam_minimal/nvdec_mjpeg_decoder.hpp"
 
@@ -58,8 +59,8 @@ private:
   std::string pixel_format_;
   int cuda_device_id_{0};
   bool debug_enabled_{false};
-  int nvdec_v4l2_buffer_count_{3};
-  int nvdec_capture_buffer_padding_{1};
+  int nvdec_v4l2_buffer_count_{4};
+  int nvdec_capture_buffer_padding_{2};
   bool nvdec_drop_late_frames_{true};
   static constexpr int kNvdecFailureThreshold = -1;
   int nvdec_failure_count_{0};

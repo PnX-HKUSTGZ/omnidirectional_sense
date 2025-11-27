@@ -1,6 +1,7 @@
 #ifndef GPU_CAM_MINIMAL_NVDEC_MJPEG_DECODER_IMPL_HPP
 #define GPU_CAM_MINIMAL_NVDEC_MJPEG_DECODER_IMPL_HPP
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -26,6 +27,14 @@ class NvdecMjpegDecoderImpl {
 public:
     NvdecMjpegDecoderImpl() = default;
     ~NvdecMjpegDecoderImpl() = default;
+
+    struct CaptureResult {
+        int ret{-1};
+        int err{0};
+        NvBuffer* nvbuf{nullptr};
+        v4l2_buffer buffer{};
+        std::array<v4l2_plane, VIDEO_MAX_PLANES> planes{};
+    };
 
     bool grab_camera_frame(v4l2_buffer &out_vbuf, void*& out_data, size_t& out_len);
     bool feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vbuf, const void* data, size_t len,
@@ -73,6 +82,12 @@ public:
     uint32_t requested_v4l2_buffers{4};
     uint32_t capture_buffer_padding{2};
     bool drop_late_frames{false};
+    std::future<CaptureResult> capture_future_;
+    bool capture_future_valid_{false};
+
+    void ensure_capture_future();
+    bool fetch_capture_result(CaptureResult &result, int timeout_ms);
+    void fill_v4l2_buffer_from_capture(const CaptureResult &src, v4l2_buffer &dst);
 };
 
 } // namespace gpu_cam_minimal

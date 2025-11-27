@@ -289,6 +289,74 @@ int NvdecMjpegDecoderImpl::get_capture_dmabuf_fd(uint32_t index) const
     return capture_dmabuf_fds[index];
 }
 
+void NvdecMjpegDecoderImpl::ensure_capture_future()
+{
+    if (capture_future_valid_ || !dec) {
+        return;
+    }
+    capture_future_valid_ = true;
+    capture_future_ = std::async(std::launch::async, [this]() {
+        CaptureResult result;
+        result.buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        result.buffer.memory = V4L2_MEMORY_DMABUF;
+        result.buffer.length = VIDEO_MAX_PLANES;
+        result.buffer.m.planes = result.planes.data();
+        int ret = -1;
+        int err = ENODEV;
+        NvBuffer* nvbuf = nullptr;
+        if (dec) {
+            ret = dec->capture_plane.dqBuffer(result.buffer, &nvbuf, nullptr, -1);
+            err = (ret < 0) ? errno : 0;
+        }
+        result.ret = ret;
+        result.err = err;
+        result.nvbuf = nvbuf;
+        return result;
+    });
+}
+
+bool NvdecMjpegDecoderImpl::fetch_capture_result(CaptureResult &result, int timeout_ms)
+{
+    ensure_capture_future();
+    if (!capture_future_valid_) {
+        errno = EIO;
+        return false;
+    }
+
+    bool ready = false;
+    if (timeout_ms < 0) {
+        capture_future_.wait();
+        ready = true;
+    } else {
+        ready = capture_future_.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::ready;
+    }
+
+    if (!ready) {
+        errno = EAGAIN;
+        return false;
+    }
+
+    result = capture_future_.get();
+    capture_future_valid_ = false;
+    result.buffer.m.planes = result.planes.data();
+    if (result.ret < 0) {
+        errno = result.err != 0 ? result.err : EIO;
+        return false;
+    }
+    return true;
+}
+
+void NvdecMjpegDecoderImpl::fill_v4l2_buffer_from_capture(const CaptureResult &src, v4l2_buffer &dst)
+{
+    v4l2_plane *dst_planes = dst.m.planes;
+    dst = src.buffer;
+    dst.m.planes = dst_planes;
+    const uint32_t plane_count = std::min<uint32_t>(dst.length, VIDEO_MAX_PLANES);
+    for (uint32_t p = 0; p < plane_count; ++p) {
+        dst.m.planes[p] = src.planes[p];
+    }
+}
+
 void NvdecMjpegDecoderImpl::start_output_reclaim_thread()
 {
     if (output_reclaim_future.valid() || !dec) {
@@ -452,7 +520,7 @@ bool NvdecMjpegDecoderImpl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vb
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to queue buffer to decoder output plane.");
         release_output_slot(idx);
         (void)v4l2_ioctl(v4l2_fd, VIDIOC_QBUF, &cam_vbuf);
-        errno = q_err != 0 ? q_err : EIO;
+        errno = (q_err == EBUSY || q_err == EAGAIN) ? EAGAIN : (q_err != 0 ? q_err : EIO);
     }
     out_next_idx = 1 - out_next_idx;
 
@@ -564,24 +632,20 @@ bool NvdecMjpegDecoderImpl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vb
     }
 
     // 步骤6：从 capture 平面取出一帧解码后的输出并返回
-    if (dec->capture_plane.dqBuffer(out_cbuf, &out_cap_nvbuf, nullptr, -1) < 0) {
+    CaptureResult capture_result;
+    if (!fetch_capture_result(capture_result, -1)) {
         const int dq_err = errno;
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Timeout or failure dequeuing from capture plane.");
         errno = dq_err != 0 ? dq_err : EIO;
         return false;
     }
+    fill_v4l2_buffer_from_capture(capture_result, out_cbuf);
+    out_cap_nvbuf = capture_result.nvbuf;
 
     if (drop_late_frames) {
-        v4l2_plane* caller_planes = out_cbuf.m.planes;
         while (true) {
-            v4l2_buffer latest_cbuf{};
-            v4l2_plane latest_planes[VIDEO_MAX_PLANES]{};
-            latest_cbuf.m.planes = latest_planes;
-            latest_cbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-            latest_cbuf.memory = V4L2_MEMORY_DMABUF;
-            NvBuffer* latest_nvbuf = nullptr;
-            int ret = dec->capture_plane.dqBuffer(latest_cbuf, &latest_nvbuf, nullptr, 0);
-            if (ret < 0) {
+            CaptureResult latest_result;
+            if (!fetch_capture_result(latest_result, 0)) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) {
                     break;
                 }
@@ -592,13 +656,8 @@ bool NvdecMjpegDecoderImpl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vb
             if (!requeue_capture_buffer(out_cbuf)) {
                 RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to requeue dropped capture buffer %u", out_cbuf.index);
             }
-            out_cbuf = latest_cbuf;
-            out_cbuf.m.planes = caller_planes;
-            const uint32_t plane_count = std::min<uint32_t>(out_cbuf.length, VIDEO_MAX_PLANES);
-            for (uint32_t p = 0; p < plane_count; ++p) {
-                out_cbuf.m.planes[p] = latest_planes[p];
-            }
-            out_cap_nvbuf = latest_nvbuf;
+            fill_v4l2_buffer_from_capture(latest_result, out_cbuf);
+            out_cap_nvbuf = latest_result.nvbuf;
         }
     }
     int queued_fd = get_capture_dmabuf_fd(out_cbuf.index);
