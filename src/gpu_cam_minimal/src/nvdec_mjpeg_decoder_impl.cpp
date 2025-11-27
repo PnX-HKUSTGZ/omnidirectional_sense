@@ -1,6 +1,7 @@
 #include "gpu_cam_minimal/nvdec_mjpeg_decoder_impl.hpp"
 #include "gpu_cam_minimal/yuv2rgb.cuh"
 
+#include <algorithm>
 #include <vector>
 #include <thread>
 #include <mutex>
@@ -491,7 +492,10 @@ bool NvdecMjpegDecoderImpl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vb
             return false;
         }
 
-        capture_num_buffers = static_cast<uint32_t>(min_bufs + 2);
+        capture_num_buffers = static_cast<uint32_t>(min_bufs) + capture_buffer_padding;
+        if (capture_num_buffers < static_cast<uint32_t>(min_bufs)) {
+            capture_num_buffers = static_cast<uint32_t>(min_bufs);
+        }
         capture_dmabuf_fds.assign(capture_num_buffers, -1);
 
         NvBufSurf::NvCommonAllocateParams cap_params{};
@@ -565,6 +569,37 @@ bool NvdecMjpegDecoderImpl::feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vb
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Timeout or failure dequeuing from capture plane.");
         errno = dq_err != 0 ? dq_err : EIO;
         return false;
+    }
+
+    if (drop_late_frames) {
+        v4l2_plane* caller_planes = out_cbuf.m.planes;
+        while (true) {
+            v4l2_buffer latest_cbuf{};
+            v4l2_plane latest_planes[VIDEO_MAX_PLANES]{};
+            latest_cbuf.m.planes = latest_planes;
+            latest_cbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            latest_cbuf.memory = V4L2_MEMORY_DMABUF;
+            NvBuffer* latest_nvbuf = nullptr;
+            int ret = dec->capture_plane.dqBuffer(latest_cbuf, &latest_nvbuf, nullptr, 0);
+            if (ret < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) {
+                    break;
+                }
+                RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed draining capture queue (errno=%d)", errno);
+                break;
+            }
+
+            if (!requeue_capture_buffer(out_cbuf)) {
+                RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Failed to requeue dropped capture buffer %u", out_cbuf.index);
+            }
+            out_cbuf = latest_cbuf;
+            out_cbuf.m.planes = caller_planes;
+            const uint32_t plane_count = std::min<uint32_t>(out_cbuf.length, VIDEO_MAX_PLANES);
+            for (uint32_t p = 0; p < plane_count; ++p) {
+                out_cbuf.m.planes[p] = latest_planes[p];
+            }
+            out_cap_nvbuf = latest_nvbuf;
+        }
     }
     int queued_fd = get_capture_dmabuf_fd(out_cbuf.index);
 

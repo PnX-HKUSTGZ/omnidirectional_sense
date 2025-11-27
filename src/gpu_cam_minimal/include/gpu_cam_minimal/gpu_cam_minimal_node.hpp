@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <linux/videodev2.h>
 #include <sys/time.h>
 
@@ -22,6 +24,7 @@
 class GpuCamMinimalNode : public rclcpp::Node {
 public:
   explicit GpuCamMinimalNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  ~GpuCamMinimalNode() override;
 
 private:
   bool openCpuCapture();
@@ -33,6 +36,14 @@ private:
   static int64_t timeval_to_ns(const timeval & tv);
   rclcpp::Time convert_v4l2_timestamp(const timeval & tv, bool is_monotonic);
   void tick();
+  void startCpuTimer();
+  void startNvdecCaptureLoop();
+  void stopNvdecCaptureLoop();
+  void nvdecCaptureLoop();
+  bool readNvdecFrame(cv::cuda::GpuMat & gpu_rgb, rclcpp::Time & timestamp);
+  void publishFrame(const cv::cuda::GpuMat & gpu_rgb, const cv::Mat * cpu_rgb, const rclcpp::Time & timestamp);
+  void publishDebugImage(const sensor_msgs::msg::CameraInfo & info, const cv::cuda::GpuMat & gpu_rgb,
+                        const cv::Mat * cpu_rgb);
   static int parse_device_id(const std::string & dev);
 
   // usb_cam-aligned params
@@ -47,6 +58,9 @@ private:
   std::string pixel_format_;
   int cuda_device_id_{0};
   bool debug_enabled_{false};
+  int nvdec_v4l2_buffer_count_{3};
+  int nvdec_capture_buffer_padding_{1};
+  bool nvdec_drop_late_frames_{true};
   static constexpr int kNvdecFailureThreshold = -1;
   int nvdec_failure_count_{0};
   struct CameraControlParams {
@@ -83,4 +97,7 @@ private:
 
   // NVDEC 解码器实例（按需）
   std::unique_ptr<gpu_cam_minimal::NvdecMjpegDecoder> nvdec_;
+  std::thread nvdec_thread_;
+  std::atomic<bool> nvdec_thread_running_{false};
+  std::atomic<bool> nvdec_thread_stop_{false};
 };

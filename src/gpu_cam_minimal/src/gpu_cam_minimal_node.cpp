@@ -1,11 +1,13 @@
 #include "gpu_cam_minimal/gpu_cam_minimal_node.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <thread>
 
 #include <armor_detector/gpu_image_type_adapter.hpp>
 #include <cuda_runtime_api.h>
@@ -30,6 +32,9 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
   publish_mode_ = "gpu"; // fixed mode
   pixel_format_ = "mjpeg"; // pipeline assumes MJPEG input
   debug_enabled_ = this->declare_parameter<bool>("debug", false);
+  nvdec_v4l2_buffer_count_ = this->declare_parameter<int>("nvdec_v4l2_buffer_count", 3);
+  nvdec_capture_buffer_padding_ = this->declare_parameter<int>("nvdec_capture_buffer_padding", 1);
+  nvdec_drop_late_frames_ = this->declare_parameter<bool>("nvdec_drop_late_frames", true);
   control_params_.brightness = this->declare_parameter<int>("brightness", 0);
   control_params_.contrast = this->declare_parameter<int>("contrast", 32);
   control_params_.saturation = this->declare_parameter<int>("saturation", 64);
@@ -63,10 +68,16 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
   // Open camera (may choose HW MJPEG decode path on Jetson)
   openCamera();
 
-  // Timer at ~fps
-  auto period_ms = (framerate_ > 0.0) ? static_cast<int>(1000.0 / framerate_) : 33; // default ~30fps
-  timer_ = this->create_wall_timer(std::chrono::milliseconds(period_ms),
-    std::bind(&GpuCamMinimalNode::tick, this));
+  if (use_hw_mjpeg_) {
+    startNvdecCaptureLoop();
+  } else {
+    startCpuTimer();
+  }
+}
+
+GpuCamMinimalNode::~GpuCamMinimalNode()
+{
+  stopNvdecCaptureLoop();
 }
 
 void GpuCamMinimalNode::initializeCudaDevice()
@@ -87,6 +98,11 @@ void GpuCamMinimalNode::openCamera()
 
   if (use_hw_mjpeg_) {
     nvdec_ = std::make_unique<gpu_cam_minimal::NvdecMjpegDecoder>();
+    gpu_cam_minimal::NvdecMjpegDecoder::Config config;
+    config.v4l2_buffer_count = static_cast<uint32_t>(std::max(2, nvdec_v4l2_buffer_count_));
+    config.capture_buffer_padding = static_cast<uint32_t>(std::max(1, nvdec_capture_buffer_padding_));
+    config.drop_late_frames = nvdec_drop_late_frames_;
+    nvdec_->set_config(config);
     if (!nvdec_->open(video_device_, image_width_, image_height_, framerate_)) {
       RCLCPP_WARN(get_logger(), "Falling back to OpenCV VideoCapture; NVDEC open failed");
       use_hw_mjpeg_ = false;
@@ -191,81 +207,130 @@ rclcpp::Time GpuCamMinimalNode::convert_v4l2_timestamp(const timeval & tv, bool 
 
 void GpuCamMinimalNode::tick()
 {
-  rclcpp::Time timestamp;
-  cv::Mat frame_bgr;
-  cv::Mat frame_rgb_cpu;
-  cv::cuda::GpuMat gpu_rgb;
-
   if (use_hw_mjpeg_) {
-    struct timeval capture_tv{};
-    bool ts_monotonic = false;
-    if (!nvdec_ || !nvdec_->read_rgb(gpu_rgb, &capture_tv, &ts_monotonic)) {
-      int err = errno;
-      handleNvdecFailure("read/decode failed (errno=" + std::string(strerror(err)) + ")");
-      return;
-    }
-    if (gpu_rgb.empty()) {
-      handleNvdecFailure("GPU RGB frame is empty");
-      return;
-    }
-    nvdec_failure_count_ = 0;
-    timestamp = convert_v4l2_timestamp(capture_tv, ts_monotonic);
-  } else {
-    nvdec_failure_count_ = 0;
-    timestamp = this->now();
-    if (!cap_.read(frame_bgr)) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed to read frame");
-      return;
-    }
-    cv::cvtColor(frame_bgr, frame_rgb_cpu, cv::COLOR_BGR2RGB);
-    if (frame_rgb_cpu.empty()) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Converted RGB frame is empty");
-      return;
-    }
-    if (d_frame_rgb_.empty() || d_frame_rgb_.rows != frame_rgb_cpu.rows ||
-        d_frame_rgb_.cols != frame_rgb_cpu.cols || d_frame_rgb_.type() != frame_rgb_cpu.type()) {
-      d_frame_rgb_.release();
-      d_frame_rgb_ = cv::cuda::GpuMat(frame_rgb_cpu.size(), frame_rgb_cpu.type());
-    }
-    d_frame_rgb_.upload(frame_rgb_cpu);
-    gpu_rgb = d_frame_rgb_;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+      "tick() invoked while NVDEC mode active; ignoring timer callback");
+    return;
   }
 
+  rclcpp::Time timestamp = this->now();
+  cv::Mat frame_bgr;
+  cv::Mat frame_rgb_cpu;
+
+  nvdec_failure_count_ = 0;
+  if (!cap_.read(frame_bgr)) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed to read frame");
+    return;
+  }
+  cv::cvtColor(frame_bgr, frame_rgb_cpu, cv::COLOR_BGR2RGB);
+  if (frame_rgb_cpu.empty()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Converted RGB frame is empty");
+    return;
+  }
+  if (d_frame_rgb_.empty() || d_frame_rgb_.rows != frame_rgb_cpu.rows ||
+      d_frame_rgb_.cols != frame_rgb_cpu.cols || d_frame_rgb_.type() != frame_rgb_cpu.type()) {
+    d_frame_rgb_.release();
+    d_frame_rgb_ = cv::cuda::GpuMat(frame_rgb_cpu.size(), frame_rgb_cpu.type());
+  }
+  d_frame_rgb_.upload(frame_rgb_cpu);
+
+  publishFrame(d_frame_rgb_, &frame_rgb_cpu, timestamp);
+}
+
+void GpuCamMinimalNode::startCpuTimer()
+{
+  if (timer_) {
+    return;
+  }
+  auto period_ms = (framerate_ > 0.0) ? static_cast<int>(1000.0 / framerate_) : 33;
+  timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(period_ms), std::bind(&GpuCamMinimalNode::tick, this));
+}
+
+void GpuCamMinimalNode::startNvdecCaptureLoop()
+{
+  if (nvdec_thread_running_.load()) {
+    return;
+  }
+  nvdec_thread_stop_.store(false);
+  nvdec_thread_running_.store(true);
+  nvdec_thread_ = std::thread([this]() {
+    nvdecCaptureLoop();
+  });
+}
+
+void GpuCamMinimalNode::stopNvdecCaptureLoop()
+{
+  nvdec_thread_stop_.store(true);
+  if (nvdec_thread_.joinable()) {
+    nvdec_thread_.join();
+  }
+  nvdec_thread_running_.store(false);
+}
+
+void GpuCamMinimalNode::nvdecCaptureLoop()
+{
+  cv::cuda::GpuMat gpu_rgb;
+  while (rclcpp::ok() && !nvdec_thread_stop_.load()) {
+    if (!use_hw_mjpeg_ || !nvdec_) {
+      break;
+    }
+
+    rclcpp::Time timestamp;
+    if (readNvdecFrame(gpu_rgb, timestamp)) {
+      nvdec_failure_count_ = 0;
+      publishFrame(gpu_rgb, nullptr, timestamp);
+      continue;
+    }
+
+    int err = errno;
+    if (err == EAGAIN || err == EWOULDBLOCK) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+
+    handleNvdecFailure("read/decode failed (errno=" + std::string(strerror(err)) + ")");
+    if (!use_hw_mjpeg_) {
+      break;
+    }
+  }
+  nvdec_thread_running_.store(false);
+}
+
+bool GpuCamMinimalNode::readNvdecFrame(cv::cuda::GpuMat & gpu_rgb, rclcpp::Time & timestamp)
+{
+  if (!nvdec_) {
+    errno = ENODEV;
+    return false;
+  }
+  struct timeval capture_tv{};
+  bool ts_monotonic = false;
+  if (!nvdec_->read_rgb(gpu_rgb, &capture_tv, &ts_monotonic)) {
+    return false;
+  }
+  if (gpu_rgb.empty()) {
+    errno = EIO;
+    return false;
+  }
+  timestamp = convert_v4l2_timestamp(capture_tv, ts_monotonic);
+  return true;
+}
+
+void GpuCamMinimalNode::publishFrame(const cv::cuda::GpuMat & gpu_rgb, const cv::Mat * cpu_rgb,
+                                     const rclcpp::Time & timestamp)
+{
   if (gpu_rgb.empty()) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "GPU RGB frame is empty");
     return;
   }
 
-  // Prepare camera info
   auto ci = cinfo_mgr_->getCameraInfo();
   ci.header.stamp = timestamp;
   ci.header.frame_id = frame_id_;
 
-  auto publish_debug_if_requested = [&](const sensor_msgs::msg::CameraInfo & info) {
-    if (!debug_enabled_ || !debug_image_pub_ || gpu_rgb.empty()) {
-      return;
-    }
-    cv::Mat debug_cpu;
-    gpu_rgb.download(debug_cpu);
-    if (debug_cpu.empty()) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Debug RGB download failed");
-      return;
-    }
-    sensor_msgs::msg::Image debug_msg;
-    debug_msg.header = info.header;
-    debug_msg.encoding = "rgb8";
-    debug_msg.is_bigendian = false;
-    debug_msg.height = static_cast<uint32_t>(debug_cpu.rows);
-    debug_msg.width = static_cast<uint32_t>(debug_cpu.cols);
-    debug_msg.step = static_cast<uint32_t>(debug_cpu.step);
-    size_t debug_size = debug_cpu.total() * debug_cpu.elemSize();
-    debug_msg.data.resize(debug_size);
-    std::memcpy(debug_msg.data.data(), debug_cpu.data, debug_size);
-    debug_image_pub_->publish(debug_msg);
-  };
+  const bool gpu_publish = (publish_mode_ == "gpu" || publish_mode_ == "gpu_hw") && gpu_image_pub_;
 
-  if ((publish_mode_ == "gpu" || publish_mode_ == "gpu_hw") && gpu_image_pub_) {
-    // Publish GPU image with type adapter; no conversions
+  if (gpu_publish) {
     armor_detector::GpuImage gpu_msg;
     gpu_msg.header = ci.header;
     gpu_msg.encoding = "rgb8";
@@ -277,38 +342,69 @@ void GpuCamMinimalNode::tick()
     if (gpu_cam_info_pub_) {
       gpu_cam_info_pub_->publish(ci);
     }
-    publish_debug_if_requested(ci);
+  } else {
+    if (!image_pub_ || !cam_info_pub_) {
+      return;
+    }
+    cv::Mat rgb_cpu_storage;
+    const cv::Mat *src_cpu = cpu_rgb;
+    if (!src_cpu) {
+      gpu_rgb.download(rgb_cpu_storage);
+      src_cpu = &rgb_cpu_storage;
+    }
+    if (!src_cpu || src_cpu->empty()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "CPU RGB frame unavailable for publish");
+      return;
+    }
+
+    sensor_msgs::msg::Image msg;
+    msg.header = ci.header;
+    msg.encoding = "rgb8";
+    msg.is_bigendian = false;
+    msg.height = static_cast<uint32_t>(src_cpu->rows);
+    msg.width = static_cast<uint32_t>(src_cpu->cols);
+    msg.step = static_cast<uint32_t>(src_cpu->step);
+    const size_t size_bytes = src_cpu->total() * src_cpu->elemSize();
+    msg.data.resize(size_bytes);
+    std::memcpy(msg.data.data(), src_cpu->data, size_bytes);
+
+    image_pub_->publish(msg);
+    cam_info_pub_->publish(ci);
+  }
+
+  publishDebugImage(ci, gpu_rgb, cpu_rgb);
+}
+
+void GpuCamMinimalNode::publishDebugImage(const sensor_msgs::msg::CameraInfo & info,
+                                          const cv::cuda::GpuMat & gpu_rgb,
+                                          const cv::Mat * cpu_rgb)
+{
+  if (!debug_enabled_ || !debug_image_pub_ || gpu_rgb.empty()) {
     return;
   }
 
-  // CPU publish path: sensor_msgs/Image (already RGB)
-  auto msg = sensor_msgs::msg::Image();
-  msg.header = ci.header;
-  msg.encoding = "rgb8";
-  msg.is_bigendian = false;
-
-  if (!use_hw_mjpeg_) {
-    msg.height = static_cast<uint32_t>(frame_rgb_cpu.rows);
-    msg.width = static_cast<uint32_t>(frame_rgb_cpu.cols);
-    msg.step = static_cast<uint32_t>(frame_rgb_cpu.step);
-    size_t size_bytes = frame_rgb_cpu.total() * frame_rgb_cpu.elemSize();
-    msg.data.resize(size_bytes);
-    std::memcpy(msg.data.data(), frame_rgb_cpu.data, size_bytes);
-  } else {
-    // Download minimal copy to publish when GPU transport is not available
-    cv::Mat rgb_cpu;
-    gpu_rgb.download(rgb_cpu);
-    msg.height = static_cast<uint32_t>(rgb_cpu.rows);
-    msg.width = static_cast<uint32_t>(rgb_cpu.cols);
-    msg.step = static_cast<uint32_t>(rgb_cpu.step);
-    size_t size_bytes = rgb_cpu.total() * rgb_cpu.elemSize();
-    msg.data.resize(size_bytes);
-    std::memcpy(msg.data.data(), rgb_cpu.data, size_bytes);
+  cv::Mat debug_cpu_storage;
+  const cv::Mat *src_cpu = cpu_rgb;
+  if (!src_cpu) {
+    gpu_rgb.download(debug_cpu_storage);
+    src_cpu = &debug_cpu_storage;
+  }
+  if (!src_cpu || src_cpu->empty()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Debug RGB download failed");
+    return;
   }
 
-  image_pub_->publish(msg);
-  cam_info_pub_->publish(ci);
-  publish_debug_if_requested(ci);
+  sensor_msgs::msg::Image debug_msg;
+  debug_msg.header = info.header;
+  debug_msg.encoding = "rgb8";
+  debug_msg.is_bigendian = false;
+  debug_msg.height = static_cast<uint32_t>(src_cpu->rows);
+  debug_msg.width = static_cast<uint32_t>(src_cpu->cols);
+  debug_msg.step = static_cast<uint32_t>(src_cpu->step);
+  const size_t debug_size = src_cpu->total() * src_cpu->elemSize();
+  debug_msg.data.resize(debug_size);
+  std::memcpy(debug_msg.data.data(), src_cpu->data, debug_size);
+  debug_image_pub_->publish(debug_msg);
 }
 
 int GpuCamMinimalNode::parse_device_id(const std::string & dev)
@@ -376,6 +472,7 @@ void GpuCamMinimalNode::fallbackToCpuCapture(const std::string & reason)
     return;
   }
 
+  stopNvdecCaptureLoop();
   RCLCPP_ERROR(get_logger(), "Disabling NVDEC path: %s. Falling back to OpenCV pipeline.", reason.c_str());
   if (nvdec_) {
     nvdec_->close_decoder();
@@ -387,6 +484,8 @@ void GpuCamMinimalNode::fallbackToCpuCapture(const std::string & reason)
   if (!openCpuCapture()) {
     RCLCPP_FATAL(get_logger(), "CPU fallback failed to open device %s; shutting down.", video_device_.c_str());
     rclcpp::shutdown();
+  } else {
+    startCpuTimer();
   }
 }
 

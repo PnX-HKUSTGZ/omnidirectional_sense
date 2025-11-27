@@ -1,5 +1,6 @@
 #include "gpu_cam_minimal/nvdec_mjpeg_decoder.hpp"
 
+#include <algorithm>
 #include <vector>
 #include <thread>
 #include <mutex>
@@ -43,12 +44,20 @@ namespace gpu_cam_minimal {
 NvdecMjpegDecoder::NvdecMjpegDecoder() : impl_(new NvdecMjpegDecoderImpl) {}
 NvdecMjpegDecoder::~NvdecMjpegDecoder() { close_decoder(); }
 
+void NvdecMjpegDecoder::set_config(const Config & config)
+{
+    config_ = config;
+}
+
 bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int height, double fps)
 {
     impl_->device = video_device;
     impl_->width  = width;
     impl_->height = height;
     impl_->fps    = fps;
+    impl_->requested_v4l2_buffers = std::max<uint32_t>(2, config_.v4l2_buffer_count);
+    impl_->capture_buffer_padding = std::max<uint32_t>(1, config_.capture_buffer_padding);
+    impl_->drop_late_frames = config_.drop_late_frames;
 
     // 打开 V4L2 camera（MJPEG bitstream）
     impl_->v4l2_fd = ::open(video_device.c_str(), O_RDWR | O_NONBLOCK);
@@ -81,7 +90,7 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
     // 初始化 V4L2 MMAP 缓冲并开启 STREAMON
     {
         v4l2_requestbuffers req{};
-        req.count = 4;
+        req.count = impl_->requested_v4l2_buffers;
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
         if (v4l2_ioctl(impl_->v4l2_fd, VIDIOC_REQBUFS, &req) < 0) {

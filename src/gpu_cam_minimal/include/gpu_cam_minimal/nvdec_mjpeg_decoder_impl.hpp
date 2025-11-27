@@ -70,6 +70,9 @@ public:
     PFNEGLCREATEIMAGEKHRPROC  eglCreateImageKHR{nullptr};
     PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR{nullptr};
     std::chrono::steady_clock::time_point last_capture_init_log{std::chrono::steady_clock::time_point::min()};
+    uint32_t requested_v4l2_buffers{4};
+    uint32_t capture_buffer_padding{2};
+    bool drop_late_frames{false};
 };
 
 } // namespace gpu_cam_minimal
