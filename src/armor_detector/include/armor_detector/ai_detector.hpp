@@ -78,6 +78,12 @@ public:
      */
     std::string getDetectorType() const { return "AIDetector"; }
 
+    /// 动态调整置信度阈值（线程不安全，需外部序列化调用）
+    void setConfThreshold(float conf) { conf_threshold_ = conf; }
+
+    /// 动态调整 NMS 阈值（线程不安全，需外部序列化调用）
+    void setNmsThreshold(float nms) { nms_threshold_ = nms; }
+
 private:
     /**
      * @brief 执行模型推理

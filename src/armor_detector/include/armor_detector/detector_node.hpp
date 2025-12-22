@@ -18,12 +18,14 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/header.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include "armor_detector/gpu_image_type_adapter.hpp"
 #include "armor_detector/gpu_image.hpp"
 
 // STD
 #include <Eigen/Core>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -103,6 +105,10 @@ private:
      */
     void publishMarkers();
 
+    /// 参数回调，用于动态调参
+    rcl_interfaces::msg::SetParametersResult onParameterEvent(
+        const std::vector<rclcpp::Parameter> & parameters);
+
     // -------------------- 核心检测器 --------------------
     std::unique_ptr<AIDetector> ai_detector_;
 
@@ -129,8 +135,6 @@ private:
 
     // -------------------- 调试相关 --------------------
     bool debug_;
-    std::shared_ptr<rclcpp::ParameterEventHandler> debug_param_sub_;
-    std::shared_ptr<rclcpp::ParameterCallbackHandle> debug_cb_handle_;
     image_transport::Publisher result_img_pub_;
     
     /**
@@ -178,6 +182,8 @@ private:
 
     // -------------------- 状态控制 --------------------
     bool enable_ = true;
+    int detect_color_{RED};
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 
 }  // namespace rm_auto_aim

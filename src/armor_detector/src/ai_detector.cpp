@@ -266,7 +266,7 @@ void AIDetector::infer(const cv::cuda::GpuMat& gpu_rgb8, int detect_color)
     }
 
     idx_buf_.clear();
-    cv::dnn::NMSBoxes(boxes_buf_, scores_buf_, conf_threshold_, 0, idx_buf_);
+    cv::dnn::NMSBoxes(boxes_buf_, scores_buf_, conf_threshold_, nms_threshold_, idx_buf_);
     for (int i : idx_buf_) tmp_objects_.push_back(objects_[i]);
 }
 

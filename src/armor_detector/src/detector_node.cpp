@@ -23,6 +23,7 @@
 
 // STD
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -40,8 +41,9 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
 {
     RCLCPP_INFO(this->get_logger(), "Starting DetectorNode!");
 
-    //设置需要探测的颜色
+    // 设置需要探测的颜色
     declare_parameter("detect_color", RED);
+    detect_color_ = this->get_parameter("detect_color").as_int();
 
     // 只使用 AI 检测器
     ai_detector_ = initAIDetector();
@@ -77,12 +79,10 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
     if (debug_) {
         createDebugPublishers();
     }
-    debug_param_sub_ = std::make_shared<rclcpp::ParameterEventHandler>(this);
-    debug_cb_handle_ =
-        debug_param_sub_->add_parameter_callback("debug", [this](const rclcpp::Parameter & p) {
-            debug_ = p.as_bool();
-            debug_ ? createDebugPublishers() : destroyDebugPublishers();
-        });
+
+    // 参数回调（动态调参）
+    param_cb_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&ArmorDetectorNode::onParameterEvent, this, std::placeholders::_1));
 }
 
 // ==================== 初始化功能 ====================
@@ -106,6 +106,83 @@ std::unique_ptr<AIDetector> ArmorDetectorNode::initAIDetector()
     return ai_detector;
 }
 
+rcl_interfaces::msg::SetParametersResult ArmorDetectorNode::onParameterEvent(
+    const std::vector<rclcpp::Parameter> & parameters)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    result.reason = "success";
+
+    std::optional<float> new_conf;
+    std::optional<float> new_nms;
+    std::optional<int> new_detect_color;
+    std::optional<bool> new_debug;
+
+    for (const auto & param : parameters) {
+        const auto & name = param.get_name();
+        try {
+            if (name == "detect_color") {
+                int value = param.as_int();
+                if (value != RED && value != BLUE) {
+                    result.successful = false;
+                    result.reason = "detect_color must be 0 (RED) or 1 (BLUE)";
+                    break;
+                }
+                new_detect_color = value;
+            } else if (name == "ai_conf_threshold") {
+                double value = param.as_double();
+                if (value <= 0.0 || value >= 1.0) {
+                    result.successful = false;
+                    result.reason = "ai_conf_threshold must be in (0, 1)";
+                    break;
+                }
+                new_conf = static_cast<float>(value);
+            } else if (name == "ai_nms_threshold") {
+                double value = param.as_double();
+                if (value < 0.0 || value > 1.0) {
+                    result.successful = false;
+                    result.reason = "ai_nms_threshold must be in [0, 1]";
+                    break;
+                }
+                new_nms = static_cast<float>(value);
+            } else if (name == "debug") {
+                new_debug = param.as_bool();
+            } else if (name == "ai_model_path" || name == "ai_device") {
+                result.successful = false;
+                result.reason = "Changing " + name + " at runtime is not supported";
+                break;
+            }
+        } catch (const rclcpp::ParameterTypeException &) {
+            result.successful = false;
+            result.reason = "Type mismatch for parameter " + name;
+            break;
+        }
+    }
+
+    if (!result.successful) {
+        return result;
+    }
+
+    if (new_detect_color) {
+        detect_color_ = *new_detect_color;
+    }
+    if (new_conf && ai_detector_) {
+        ai_detector_->setConfThreshold(*new_conf);
+        RCLCPP_INFO(this->get_logger(), "ai_conf_threshold updated to %.3f", *new_conf);
+    }
+    if (new_nms && ai_detector_) {
+        ai_detector_->setNmsThreshold(*new_nms);
+        RCLCPP_INFO(this->get_logger(), "ai_nms_threshold updated to %.3f", *new_nms);
+    }
+    if (new_debug && (*new_debug != debug_)) {
+        debug_ = *new_debug;
+        debug_ ? createDebugPublishers() : destroyDebugPublishers();
+        RCLCPP_INFO(this->get_logger(), "debug mode %s", debug_ ? "enabled" : "disabled");
+    }
+
+    return result;
+}
+
 // ==================== 核心处理功能 ====================
 void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_msg)
 {
@@ -119,7 +196,7 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Empty GpuImage received");
         return;
     }
-    std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, get_parameter("detect_color").as_int());
+    std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, detect_color_);
 
     // 提取from base_link to gimbal的坐标系变换
     if (!updateTransform(img_msg->header.frame_id, "base_link", img_msg->header.stamp)) {
