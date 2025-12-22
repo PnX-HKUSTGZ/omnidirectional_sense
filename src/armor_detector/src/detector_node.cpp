@@ -65,10 +65,6 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
     armors_pub_ = this->create_publisher<auto_aim_interfaces::msg::Armors>(
         "/detector/armors", rclcpp::SensorDataQoS());
 
-    // 初始化Cars Publisher
-    cars_pub_ = this->create_publisher<auto_aim_interfaces::msg::Cars>(
-        "/detector/cars", rclcpp::SensorDataQoS());
-
     //tf2
     tf2_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
@@ -148,7 +144,6 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
     // std::string         int           std::vector<int>
     // 装甲板类别      这类装甲板的数目    这类装甲板的编号
     std::map<std::string, std::pair<int, std::vector<int>>> armor_num_map;
-    std::vector<Car> cars_detected;
     std::vector<int> valid_armors;  //筛选出能解算，符合先验的有效装甲板，并储存编号
     for (size_t i = 0; i < armors.size(); i++) {
         cv::Mat rvec, tvec;
@@ -173,67 +168,37 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
         }
     }
     for (auto & armor_num : armor_num_map) {
-        if (armor_num.second.first == 2) {
-            cars_detected.push_back(Car{(armors[armor_num.second.second[0]].x + 
-                                        armors[armor_num.second.second[1]].x) / 2,
-                                        (armors[armor_num.second.second[0]].y + 
-                                        armors[armor_num.second.second[1]].y) / 2,
-                                        (armors[armor_num.second.second[0]].z + 
-                                        armors[armor_num.second.second[1]].z) / 2,
-                                        armor_num.first});
-        }
-        else if (armor_num.second.first == 1) {
-            cars_detected.push_back(Car{armors[armor_num.second.second[0]].x, 
-                                        armors[armor_num.second.second[0]].y,
-                                        armors[armor_num.second.second[0]].z,
-                                        armor_num.first});
-        }
         if (armor_num.second.first != -1) {
-            //视为有效装甲板
+            // 视为有效装甲板
             valid_armors.insert(
                 valid_armors.end(), armor_num.second.second.begin(), armor_num.second.second.end());
-            cars_detected.push_back(Car{armors[armor_num.second.second[0]].x, 
-                                        armors[armor_num.second.second[0]].y,
-                                        armors[armor_num.second.second[0]].z,
-                                        armor_num.first});
         }
     }
-    //填充车辆信息到消息中，发送给控制节点
-    for (auto & car : cars_detected) {
-        auto car_msg = auto_aim_interfaces::msg::Car();
-        car_msg.x = car.x;
-        car_msg.y = car.y;
-        car_msg.z = car.z;
-        car_msg.type = car.type;
-        cars_msg_.cars.emplace_back(car_msg);
-    }
-    cars_msg_.header = img_msg->header;
-    cars_pub_->publish(cars_msg_);
-    
-    //填充有效装甲板到消息中，发送给调试
-    if (debug_) {
-        cv::Mat cpu_img;
-        auto_aim_interfaces::msg::Armor armor_msg;
-        for (auto & index : valid_armors) {
-            // Fill basic info
-            armor_msg.type = ARMOR_TYPE_STR[static_cast<int>(armors[index].type)];
-            armor_msg.number = armors[index].number;
 
-            // Fill pose
-            Eigen::Quaterniond eigen_quat(armors[index].r_camera_armor);
-            tf2::Quaternion tf2_q(eigen_quat.x(), eigen_quat.y(), eigen_quat.z(), eigen_quat.w());
-            armor_msg.pose.orientation = tf2::toMsg(tf2_q);
-            armor_msg.pose.position.x = armors[index].t_camera_armor(0);
-            armor_msg.pose.position.y = armors[index].t_camera_armor(1);
-            armor_msg.pose.position.z = armors[index].t_camera_armor(2);
+    // 填充有效装甲板消息并发布
+    for (auto & index : valid_armors) {
+        auto armor_msg = auto_aim_interfaces::msg::Armor();
 
-            // Fill the distance to image center
-            armor_msg.distance_to_image_center =
-                pnp_solver_->calculateDistanceToCenter(armors[index].center);
+        // Fill basic info
+        armor_msg.type = ARMOR_TYPE_STR[static_cast<int>(armors[index].type)];
+        armor_msg.number = armors[index].number;
 
-            // Fill the classification result
-            armors_msg_.armors.emplace_back(armor_msg);
+        // Fill pose
+        Eigen::Quaterniond eigen_quat(armors[index].r_camera_armor);
+        tf2::Quaternion tf2_q(eigen_quat.x(), eigen_quat.y(), eigen_quat.z(), eigen_quat.w());
+        armor_msg.pose.orientation = tf2::toMsg(tf2_q);
+        armor_msg.pose.position.x = armors[index].t_camera_armor(0);
+        armor_msg.pose.position.y = armors[index].t_camera_armor(1);
+        armor_msg.pose.position.z = armors[index].t_camera_armor(2);
 
+        // Fill the distance to image center
+        armor_msg.distance_to_image_center =
+            pnp_solver_->calculateDistanceToCenter(armors[index].center);
+
+        // Fill the classification result
+        armors_msg_.armors.emplace_back(armor_msg);
+
+        if (debug_) {
             armor_marker_.id++;
             armor_marker_.scale.y = armors[index].type == ArmorType::SMALL ? 0.135 : 0.23;
             armor_marker_.pose = armor_msg.pose;
@@ -244,6 +209,12 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
             marker_array_.markers.emplace_back(armor_marker_);
             marker_array_.markers.emplace_back(text_marker_);
         }
+    }
+
+    armors_pub_->publish(armors_msg_);
+
+    if (debug_) {
+        cv::Mat cpu_img;
         // draw results（若 cpu_img 为空，则从 GPU 下载一份临时图像供绘制）
         if (img_msg->gpu && !img_msg->gpu->empty()) {
             img_msg->gpu->download(cpu_img);
@@ -254,8 +225,6 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
 
         // Publishing marker
         publishMarkers();
-        // Publishing detected armors
-        armors_pub_->publish(armors_msg_);
     }
 }
 

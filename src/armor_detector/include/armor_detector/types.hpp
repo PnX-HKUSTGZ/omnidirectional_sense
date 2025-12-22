@@ -290,11 +290,6 @@ struct Armor
     double x, y, z;                  ///< 装甲板对应的车辆中心坐标
 };
 
-struct Car{
-    double x, y, z; 
-    std::string type; 
-}; 
-
 }  // namespace rm_auto_aim
 
 #endif  // ARMOR_DETECTOR__ARMOR_HPP_
