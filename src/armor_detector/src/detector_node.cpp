@@ -67,7 +67,7 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
     armors_pub_ = this->create_publisher<auto_aim_interfaces::msg::Armors>(
         "/detector/armors", rclcpp::SensorDataQoS());
 
-    //tf2
+    // tf2
     tf2_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
         this->get_node_base_interface(), this->get_node_timers_interface());
@@ -86,7 +86,6 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
 }
 
 // ==================== 初始化功能 ====================
-
 
 std::unique_ptr<AIDetector> ArmorDetectorNode::initAIDetector()
 {
@@ -193,7 +192,8 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
 
     // 直接使用 GPU 帧进行 AI 检测
     if (!img_msg->gpu || img_msg->gpu->empty()) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Empty GpuImage received");
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Empty GpuImage received");
         return;
     }
     std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, detect_color_);
@@ -309,18 +309,18 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
 bool ArmorDetectorNode::updateTransform(
     std::string target_frame, std::string source_frame, rclcpp::Time timestamp)
 {
-        try {
+    try {
         auto latest_tf =
             tf2_buffer_->lookupTransform(target_frame, source_frame, tf2::TimePointZero);
         const rclcpp::Time & target_time = timestamp;
         rclcpp::Time latest_time = latest_tf.header.stamp;
-        
+
         // 计算并记录时间差
         double time_diff = (target_time - latest_time).seconds();
-        RCLCPP_DEBUG(this->get_logger(), 
-            "TF time diff: %.3f ms (target: %.6f, latest: %.6f)", 
+        RCLCPP_DEBUG(
+            this->get_logger(), "TF time diff: %.3f ms (target: %.6f, latest: %.6f)",
             time_diff * 1000, target_time.seconds(), latest_time.seconds());
-        
+
         // 比较时间戳
         geometry_msgs::msg::TransformStamped odom_to_camera_tf;
         if (target_time > latest_time) {
@@ -347,19 +347,18 @@ bool ArmorDetectorNode::updateTransform(
             odom_to_camera_tf.transform.translation.z);
         return 1;
     } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN(this->get_logger(), 
-            "TF lookup failed: [%s] -> [%s] at time %.6f. Error: %s",
-            source_frame.c_str(), target_frame.c_str(), 
-            timestamp.seconds(), ex.what());
+        RCLCPP_WARN(
+            this->get_logger(), "TF lookup failed: [%s] -> [%s] at time %.6f. Error: %s",
+            source_frame.c_str(), target_frame.c_str(), timestamp.seconds(), ex.what());
         return 0;
     } catch (const std::exception & ex) {
-        RCLCPP_WARN(this->get_logger(), 
-            "Exception in lookupTransform [%s] -> [%s]: %s",
+        RCLCPP_WARN(
+            this->get_logger(), "Exception in lookupTransform [%s] -> [%s]: %s",
             source_frame.c_str(), target_frame.c_str(), ex.what());
         return 0;
     } catch (...) {
-        RCLCPP_WARN(this->get_logger(), 
-            "Unknown error in lookupTransform: [%s] -> [%s] at time %.6f", 
+        RCLCPP_WARN(
+            this->get_logger(), "Unknown error in lookupTransform: [%s] -> [%s] at time %.6f",
             source_frame.c_str(), target_frame.c_str(), timestamp.seconds());
         return 0;
     }
@@ -376,12 +375,16 @@ void ArmorDetectorNode::chooseBestPose(Armor & armor, const cv::Mat & rvec, cons
     R_camera_to_gimble << 0, 0, 1, -1, 0, 0, 0, -1, 0;
     Eigen::Vector3d rpy = (R_camera_to_gimble * rotation_matrix_eigen).eulerAngles(0, 1, 2);
 
-    //对于云台系来说，将yaw归一到-pi/2 到 pi/2中后：左侧装甲板yaw角为负，右侧装甲板yaw角为正
+    //对于云台系来说，将yaw归一到-pi/2 到
+    //pi/2中后：左侧装甲板yaw角为负，右侧装甲板yaw角为正
     rpy(1) = std::atan2(std::sin(rpy(2)), std::cos(rpy(2)));
     if (abs(rpy(2)) > M_PI / 2) {
-        rpy(0) = std::atan2(std::sin(M_PI + rpy(0)), std::cos(M_PI + rpy(0)));  // 旋转roll 180度
-        rpy(1) = std::atan2(std::sin(M_PI - rpy(1)), std::cos(M_PI - rpy(1)));  // pitch, 使用补角
-        rpy(2) = std::atan2(std::sin(M_PI + rpy(2)), std::cos(M_PI + rpy(2)));  // 旋转yaw 180度
+        rpy(0) = std::atan2(std::sin(M_PI + rpy(0)),
+                            std::cos(M_PI + rpy(0)));  // 旋转roll 180度
+        rpy(1) = std::atan2(std::sin(M_PI - rpy(1)),
+                            std::cos(M_PI - rpy(1)));  // pitch, 使用补角
+        rpy(2) = std::atan2(std::sin(M_PI + rpy(2)),
+                            std::cos(M_PI + rpy(2)));  // 旋转yaw 180度
     }
     //前哨站装甲板负倾角
     armor.sign = (armor.left_light.tilt_angle + armor.right_light.tilt_angle) * 0.5 <= 0.0;
@@ -430,11 +433,14 @@ void ArmorDetectorNode::drawResults(
         Eigen::Vector3d rpy = armor.r_odom_armor.eulerAngles(0, 1, 2);  //提取欧拉角
         // 归一化
         if (abs(rpy(1)) > M_PI / 2) {
-            rpy(0) =
-                std::atan2(std::sin(M_PI + rpy(0)), std::cos(M_PI + rpy(0)));  // 旋转roll 180度
-            rpy(1) =
-                std::atan2(std::sin(M_PI - rpy(1)), std::cos(M_PI - rpy(1)));  // pitch, 使用补角
-            rpy(2) = std::atan2(std::sin(M_PI + rpy(2)), std::cos(M_PI + rpy(2)));  // 旋转yaw 180度
+            rpy(0) = std::atan2(
+                std::sin(M_PI + rpy(0)),
+                std::cos(M_PI + rpy(0)));  // 旋转roll 180度
+            rpy(1) = std::atan2(
+                std::sin(M_PI - rpy(1)),
+                std::cos(M_PI - rpy(1)));  // pitch, 使用补角
+            rpy(2) = std::atan2(std::sin(M_PI + rpy(2)),
+                                std::cos(M_PI + rpy(2)));  // 旋转yaw 180度
         }
         double distance = armor.t_camera_armor.norm();
         cv::putText(
@@ -483,6 +489,6 @@ void ArmorDetectorNode::publishMarkers()
 #include "rclcpp_components/register_node_macro.hpp"
 
 // Register the component with class_loader.
-// This acts as a sort of entry point, allowing the component to be discoverable when its library
-// is being loaded into a running process.
+// This acts as a sort of entry point, allowing the component to be discoverable
+// when its library is being loaded into a running process.
 RCLCPP_COMPONENTS_REGISTER_NODE(rm_auto_aim::ArmorDetectorNode)

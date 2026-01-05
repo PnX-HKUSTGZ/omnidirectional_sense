@@ -1,60 +1,58 @@
 #include "gpu_cam_minimal/nvdec_mjpeg_decoder.hpp"
 
-#include <algorithm>
-#include <vector>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
-#include <chrono>
-#include <limits>
-#include <cstring>
-#include <unistd.h>
-
-
+#include <drm/drm_fourcc.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
 #include <sys/mman.h>
 #include <sys/time.h>
-#include <drm/drm_fourcc.h>
-#define EGL_EGLEXT_PROTOTYPES   
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <limits>
+#include <mutex>
+#include <thread>
+#include <vector>
+#define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <NvBuffer.h>
 #include <NvVideoDecoder.h>
 #include <cuda.h>
 #include <cudaEGL.h>
-#include "NvUtils.h"
-#include <stdarg.h>
 #include <libv4l2.h>
-#include <opencv2/cudawarping.hpp>
-#include <opencv2/cudaimgproc.hpp>
 #include <nvbufsurface.h>
 #include <nvbufsurftransform.h>
 #include <rcutils/logging_macros.h>
-#include <NvBuffer.h>
-#include "NvBufSurface.h"
-#include "gpu_cam_minimal/yuv2rgb.cuh"
-#include "gpu_cam_minimal/nvdec_mjpeg_decoder_impl.hpp"
+#include <stdarg.h>
 
-namespace gpu_cam_minimal {
+#include <opencv2/cudaimgproc.hpp>
+#include <opencv2/cudawarping.hpp>
+
+#include "NvBufSurface.h"
+#include "NvUtils.h"
+#include "gpu_cam_minimal/nvdec_mjpeg_decoder_impl.hpp"
+#include "gpu_cam_minimal/yuv2rgb.cuh"
+
+namespace gpu_cam_minimal
+{
 
 NvdecMjpegDecoder::NvdecMjpegDecoder() : impl_(new NvdecMjpegDecoderImpl) {}
 NvdecMjpegDecoder::~NvdecMjpegDecoder() { close_decoder(); }
 
-void NvdecMjpegDecoder::set_config(const Config & config)
-{
-    config_ = config;
-}
+void NvdecMjpegDecoder::set_config(const Config & config) { config_ = config; }
 
-bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int height, double fps)
+bool NvdecMjpegDecoder::open(const std::string & video_device, int width, int height, double fps)
 {
     impl_->device = video_device;
-    impl_->width  = width;
+    impl_->width = width;
     impl_->height = height;
-    impl_->fps    = fps;
+    impl_->fps = fps;
     impl_->requested_v4l2_buffers = std::max<uint32_t>(2, config_.v4l2_buffer_count);
     impl_->capture_buffer_padding = std::max<uint32_t>(1, config_.capture_buffer_padding);
     impl_->drop_late_frames = config_.drop_late_frames;
@@ -63,16 +61,16 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
     impl_->v4l2_fd = ::open(video_device.c_str(), O_RDWR | O_NONBLOCK);
     if (impl_->v4l2_fd < 0) {
         impl_->opened = false;
-        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to open V4L2 device %s: %s",
-                                video_device.c_str(), strerror(errno));
+        RCUTILS_LOG_ERROR_NAMED(
+            "nvdec_mjpeg_decoder", "Failed to open V4L2 device %s: %s", video_device.c_str(),
+            strerror(errno));
         return false;
     }
-    
+
     if (!impl_->initEglExtensions()) {
         RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Failed to initialize EGL KHR extensions");
         return false;
     }
-
 
     // 尽力设置分辨率
     (void)NvdecMjpegDecoderImpl::set_v4l2_mjpeg(impl_->v4l2_fd, width, height, fps);
@@ -81,7 +79,8 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
     v4l2_capability cap{};
     if (v4l2_ioctl(impl_->v4l2_fd, VIDIOC_QUERYCAP, &cap) == 0) {
         if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
-            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "V4L2 device does not support STREAMING API");
+            RCUTILS_LOG_ERROR_NAMED(
+                "nvdec_mjpeg_decoder", "V4L2 device does not support STREAMING API");
             close_decoder();
             return false;
         }
@@ -94,12 +93,14 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
         if (v4l2_ioctl(impl_->v4l2_fd, VIDIOC_REQBUFS, &req) < 0) {
-            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "VIDIOC_REQBUFS failed: %s", strerror(errno));
+            RCUTILS_LOG_ERROR_NAMED(
+                "nvdec_mjpeg_decoder", "VIDIOC_REQBUFS failed: %s", strerror(errno));
             close_decoder();
             return false;
         }
         if (req.count < 2) {
-            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "Insufficient V4L2 buffers allocated: %u", req.count);
+            RCUTILS_LOG_ERROR_NAMED(
+                "nvdec_mjpeg_decoder", "Insufficient V4L2 buffers allocated: %u", req.count);
             close_decoder();
             return false;
         }
@@ -110,11 +111,14 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
             buf.memory = V4L2_MEMORY_MMAP;
             buf.index = i;
             if (v4l2_ioctl(impl_->v4l2_fd, VIDIOC_QUERYBUF, &buf) < 0) {
-                RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "VIDIOC_QUERYBUF failed: %s", strerror(errno));
+                RCUTILS_LOG_ERROR_NAMED(
+                    "nvdec_mjpeg_decoder", "VIDIOC_QUERYBUF failed: %s", strerror(errno));
                 close_decoder();
                 return false;
             }
-            void* start = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, impl_->v4l2_fd, buf.m.offset);
+            void * start = mmap(
+                nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, impl_->v4l2_fd,
+                buf.m.offset);
             if (start == MAP_FAILED) {
                 RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "mmap failed: %s", strerror(errno));
                 close_decoder();
@@ -124,14 +128,16 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
             impl_->v4l2_bufs[i].length = buf.length;
 
             if (v4l2_ioctl(impl_->v4l2_fd, VIDIOC_QBUF, &buf) < 0) {
-                RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "VIDIOC_QBUF failed: %s", strerror(errno));
+                RCUTILS_LOG_ERROR_NAMED(
+                    "nvdec_mjpeg_decoder", "VIDIOC_QBUF failed: %s", strerror(errno));
                 close_decoder();
                 return false;
             }
         }
         v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         if (v4l2_ioctl(impl_->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
-            RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "VIDIOC_STREAMON failed: %s", strerror(errno));
+            RCUTILS_LOG_ERROR_NAMED(
+                "nvdec_mjpeg_decoder", "VIDIOC_STREAMON failed: %s", strerror(errno));
             close_decoder();
             return false;
         }
@@ -147,13 +153,17 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
 
     // 订阅分辨率变化事件
     if (impl_->dec->subscribeEvent(V4L2_EVENT_RESOLUTION_CHANGE, 0, 0) < 0) {
-        RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "subscribeEvent(V4L2_EVENT_RESOLUTION_CHANGE) failed; will use fallback without event.");
+        RCUTILS_LOG_WARN_NAMED(
+            "nvdec_mjpeg_decoder",
+            "subscribeEvent(V4L2_EVENT_RESOLUTION_CHANGE) failed; will use fallback without "
+            "event.");
     }
 
     // 设置 OUTPUT 平面格式（输入单帧 JPEG 码流）
     // 使用 V4L2_PIX_FMT_MJPEG 能在部分 Jetson NVDEC 版本上更稳定触发内部解析，避免后续 capture_plane.getFormat EINVAL。
     if (impl_->dec->setOutputPlaneFormat(V4L2_PIX_FMT_MJPEG, 2 * 1024 * 1024) < 0) {
-        RCUTILS_LOG_ERROR_NAMED("nvdec_mjpeg_decoder", "setOutputPlaneFormat(V4L2_PIX_FMT_MJPEG) failed");
+        RCUTILS_LOG_ERROR_NAMED(
+            "nvdec_mjpeg_decoder", "setOutputPlaneFormat(V4L2_PIX_FMT_MJPEG) failed");
         close_decoder();
         return false;
     }
@@ -197,11 +207,8 @@ bool NvdecMjpegDecoder::open(const std::string& video_device, int width, int hei
     return true;
 }
 
-
-
-bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
-                                struct timeval* capture_time,
-                                bool* timestamp_monotonic)
+bool NvdecMjpegDecoder::read_rgb(
+    cv::cuda::GpuMat & out_rgb, struct timeval * capture_time, bool * timestamp_monotonic)
 {
     if (impl_->v4l2_fd < 0 || !impl_->dec) {
         RCUTILS_LOG_WARN_NAMED("nvdec_mjpeg_decoder", "Invalid decoder or v4l2_fd not opened.");
@@ -210,7 +217,7 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
 
     // 1) 抓取一帧摄像头的 MJPEG 压缩数据
     v4l2_buffer vbuf{};
-    void* cam_data = nullptr;
+    void * cam_data = nullptr;
     size_t cam_len = 0;
     if (!impl_->grab_camera_frame(vbuf, cam_data, cam_len)) {
         // helper 内部已做必要日志与回队（当需要时）。
@@ -223,12 +230,12 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
     if (timestamp_monotonic) {
         *timestamp_monotonic = (vbuf.flags & V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) != 0;
     }
-    
 
     // 2) 将压缩数据喂给 NVDEC 并从 capture 平面取一帧解码输出
-    v4l2_buffer cbuf{}; 
-    v4l2_plane cplanes[VIDEO_MAX_PLANES]{}; cbuf.m.planes = cplanes;
-    NvBuffer* cap_nvbuf = nullptr;
+    v4l2_buffer cbuf{};
+    v4l2_plane cplanes[VIDEO_MAX_PLANES]{};
+    cbuf.m.planes = cplanes;
+    NvBuffer * cap_nvbuf = nullptr;
     if (!impl_->feed_decoder_and_dequeue_capture(vbuf, cam_data, cam_len, cap_nvbuf, cbuf)) {
         return false;
     }
@@ -245,9 +252,6 @@ bool NvdecMjpegDecoder::read_rgb(cv::cuda::GpuMat& out_rgb,
 
     return true;
 }
-
-
-
 
 void NvdecMjpegDecoder::close_decoder()
 {
@@ -295,7 +299,7 @@ void NvdecMjpegDecoder::close_decoder()
         impl_->v4l2_streaming = false;
     }
 
-    for (auto &buf : impl_->v4l2_bufs) {
+    for (auto & buf : impl_->v4l2_bufs) {
         if (buf.start && buf.length) {
             munmap(buf.start, buf.length);
         }
@@ -312,9 +316,6 @@ void NvdecMjpegDecoder::close_decoder()
 
 bool NvdecMjpegDecoder::is_open() const { return impl_->opened; }
 
-bool NvdecMjpegDecoder::is_supported()
-{
-  return true;
-}
+bool NvdecMjpegDecoder::is_supported() { return true; }
 
-} // namespace gpu_cam_minimal
+}  // namespace gpu_cam_minimal

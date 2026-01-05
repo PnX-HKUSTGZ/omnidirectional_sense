@@ -1,48 +1,53 @@
 #ifndef GPU_CAM_MINIMAL_NVDEC_MJPEG_DECODER_IMPL_HPP
 #define GPU_CAM_MINIMAL_NVDEC_MJPEG_DECODER_IMPL_HPP
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <NvBufSurface.h>
+#include <NvBuffer.h>
+#include <NvVideoDecoder.h>
+#include <linux/videodev2.h>
+#include <nvbufsurface.h>
+
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
-#include <chrono>
 #include <future>
 #include <mutex>
+#include <opencv2/core/cuda.hpp>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <linux/videodev2.h>
-#include <nvbufsurface.h>
-#include <NvBuffer.h>
-#include <NvBufSurface.h>
-#include <NvVideoDecoder.h>
-#include <opencv2/core/cuda.hpp>
+namespace gpu_cam_minimal
+{
 
-namespace gpu_cam_minimal {
-
-class NvdecMjpegDecoderImpl {
+class NvdecMjpegDecoderImpl
+{
 public:
     NvdecMjpegDecoderImpl() = default;
     ~NvdecMjpegDecoderImpl() = default;
 
-    struct CaptureResult {
+    struct CaptureResult
+    {
         int ret{-1};
         int err{0};
-        NvBuffer* nvbuf{nullptr};
+        NvBuffer * nvbuf{nullptr};
         v4l2_buffer buffer{};
         std::array<v4l2_plane, VIDEO_MAX_PLANES> planes{};
     };
 
-    bool grab_camera_frame(v4l2_buffer &out_vbuf, void*& out_data, size_t& out_len);
-    bool feed_decoder_and_dequeue_capture(v4l2_buffer &cam_vbuf, const void* data, size_t len,
-                                          NvBuffer*& out_cap_nvbuf, v4l2_buffer &out_cbuf);
-    bool convert_capture_to_rgb(NvBuffer* cap_nvbuf, v4l2_buffer &cbuf, cv::cuda::GpuMat &out_rgb);
-    bool prepare_capture_dmabuf_buffer(v4l2_buffer &cbuf);
+    bool grab_camera_frame(v4l2_buffer & out_vbuf, void *& out_data, size_t & out_len);
+    bool feed_decoder_and_dequeue_capture(
+        v4l2_buffer & cam_vbuf, const void * data, size_t len, NvBuffer *& out_cap_nvbuf,
+        v4l2_buffer & out_cbuf);
+    bool convert_capture_to_rgb(
+        NvBuffer * cap_nvbuf, v4l2_buffer & cbuf, cv::cuda::GpuMat & out_rgb);
+    bool prepare_capture_dmabuf_buffer(v4l2_buffer & cbuf);
     NvBufSurfaceColorFormat resolve_capture_color_format(uint32_t pixfmt) const;
-    bool requeue_capture_buffer(v4l2_buffer &cbuf);
+    bool requeue_capture_buffer(v4l2_buffer & cbuf);
     int get_capture_dmabuf_fd(uint32_t index) const;
     void start_output_reclaim_thread();
     void stop_output_reclaim_thread();
@@ -56,9 +61,13 @@ public:
     bool opened{false};
     int v4l2_fd{-1};
     bool v4l2_streaming{false};
-    struct V4L2Buffer { void* start{nullptr}; size_t length{0}; };
+    struct V4L2Buffer
+    {
+        void * start{nullptr};
+        size_t length{0};
+    };
     std::vector<V4L2Buffer> v4l2_bufs;
-    NvVideoDecoder* dec{nullptr};
+    NvVideoDecoder * dec{nullptr};
     EGLDisplay egl_display{EGL_NO_DISPLAY};
     std::vector<unsigned char> enc_buf;
     bool capture_configured{false};
@@ -76,9 +85,10 @@ public:
     std::atomic<bool> output_reclaim_stop{false};
     std::mutex output_plane_mutex;
     std::condition_variable output_plane_cv;
-    PFNEGLCREATEIMAGEKHRPROC  eglCreateImageKHR{nullptr};
+    PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR{nullptr};
     PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR{nullptr};
-    std::chrono::steady_clock::time_point last_capture_init_log{std::chrono::steady_clock::time_point::min()};
+    std::chrono::steady_clock::time_point last_capture_init_log{
+        std::chrono::steady_clock::time_point::min()};
     uint32_t requested_v4l2_buffers{4};
     uint32_t capture_buffer_padding{2};
     bool drop_late_frames{false};
@@ -86,10 +96,10 @@ public:
     bool capture_future_valid_{false};
 
     void ensure_capture_future();
-    bool fetch_capture_result(CaptureResult &result, int timeout_ms);
-    void fill_v4l2_buffer_from_capture(const CaptureResult &src, v4l2_buffer &dst);
+    bool fetch_capture_result(CaptureResult & result, int timeout_ms);
+    void fill_v4l2_buffer_from_capture(const CaptureResult & src, v4l2_buffer & dst);
 };
 
-} // namespace gpu_cam_minimal
+}  // namespace gpu_cam_minimal
 
-#endif // GPU_CAM_MINIMAL_NVDEC_MJPEG_DECODER_IMPL_HPP
+#endif  // GPU_CAM_MINIMAL_NVDEC_MJPEG_DECODER_IMPL_HPP
