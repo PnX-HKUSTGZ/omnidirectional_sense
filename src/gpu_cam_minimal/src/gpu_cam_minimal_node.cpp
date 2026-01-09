@@ -9,6 +9,8 @@
 #include <armor_detector/gpu_image_type_adapter.hpp>
 #include <cerrno>
 #include <chrono>
+#include <ctime>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <opencv2/cudaimgproc.hpp>
@@ -33,6 +35,11 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     publish_mode_ = "gpu";    // fixed mode
     pixel_format_ = "mjpeg";  // pipeline assumes MJPEG input
     debug_enabled_ = this->declare_parameter<bool>("debug", false);
+    use_v4l2_buffer_timestamps_ =
+        this->declare_parameter<bool>("use_v4l2_buffer_timestamps", true);
+    double timestamp_offset_sec = this->declare_parameter<double>("timestamp_offset", 0.0);
+    timestamp_offset_ = rclcpp::Duration::from_seconds(timestamp_offset_sec);
+    tsc_offset_ = this->declare_parameter<int64_t>("tsc_offset_ns", 0);
     nvdec_v4l2_buffer_count_ = this->declare_parameter<int>("nvdec_v4l2_buffer_count", 4);
     nvdec_capture_buffer_padding_ = this->declare_parameter<int>("nvdec_capture_buffer_padding", 2);
     nvdec_drop_late_frames_ = this->declare_parameter<bool>("nvdec_drop_late_frames", true);
@@ -54,6 +61,8 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     control_params_.exposure_time_absolute =
         this->declare_parameter<int>("exposure_time_absolute", 313);
     cuda_device_id_ = this->declare_parameter<int>("cuda_device_id", 0);
+
+    setTSCOffset();
 
     initializeCudaDevice();
 
@@ -209,19 +218,78 @@ int64_t GpuCamMinimalNode::timeval_to_ns(const timeval & tv)
 
 rclcpp::Time GpuCamMinimalNode::convert_v4l2_timestamp(const timeval & tv, bool is_monotonic)
 {
-    int64_t ts_ns = timeval_to_ns(tv);
-    if (ts_ns <= 0) {
-        return this->now();
+    if (!use_v4l2_buffer_timestamps_) {
+        return system_now_with_offset();
     }
 
-    auto ros_now = this->now();
-    rclcpp::Time ref_clock = is_monotonic ? steady_clock_.now() : system_clock_.now();
-    int64_t offset = ros_now.nanoseconds() - ref_clock.nanoseconds();
-    int64_t ros_ns = ts_ns + offset;
-    if (ros_ns < 0) {
-        ros_ns = 0;
+    (void)is_monotonic;
+
+    int64_t ts_ns = timeval_to_ns(tv);
+    if (ts_ns <= 0) {
+        return system_now_with_offset();
     }
-    return rclcpp::Time(ros_ns, RCL_ROS_TIME);
+
+    int64_t stamp_ns = ts_ns + getTimeOffset() - tsc_offset_;
+
+    if (stamp_ns < 0) {
+        stamp_ns = 0;
+    }
+
+    rclcpp::Time stamp(stamp_ns, get_clock()->get_clock_type());
+    stamp = stamp + timestamp_offset_;
+    return stamp;
+}
+
+int64_t GpuCamMinimalNode::getTimeOffset() const
+{
+    timespec system_sample{};
+    timespec monotonic_sample{};
+    if (clock_gettime(CLOCK_REALTIME, &system_sample) != 0 ||
+        clock_gettime(CLOCK_MONOTONIC, &monotonic_sample) != 0) {
+        return 0;
+    }
+
+    constexpr int64_t kSecToNs = 1000000000LL;
+    int64_t system_ns = static_cast<int64_t>(system_sample.tv_sec) * kSecToNs +
+                        static_cast<int64_t>(system_sample.tv_nsec);
+    int64_t monotonic_ns = static_cast<int64_t>(monotonic_sample.tv_sec) * kSecToNs +
+                           static_cast<int64_t>(monotonic_sample.tv_nsec);
+    return system_ns - monotonic_ns;
+}
+
+void GpuCamMinimalNode::setTSCOffset()
+{
+#if defined(__aarch64__) || defined(__arm__)
+    if (tsc_offset_ != 0) {
+        RCLCPP_INFO(
+            get_logger(), "Using user provided tsc_offset_ns=%lld", static_cast<long long>(tsc_offset_));
+        return;
+    }
+
+    const char * env_offset = std::getenv("TSC_OFFSET_NS");
+    if (env_offset != nullptr) {
+        char * end = nullptr;
+        errno = 0;
+        long long parsed = std::strtoll(env_offset, &end, 10);
+        if (end != env_offset && errno == 0) {
+            tsc_offset_ = static_cast<int64_t>(parsed);
+            RCLCPP_INFO(
+                get_logger(), "Using TSC_OFFSET_NS env override: %lld ns",
+                static_cast<long long>(tsc_offset_));
+            return;
+        }
+    }
+
+    // Default to zero; can be overridden via parameter or env when Jetson kernels expose TSC skew.
+    tsc_offset_ = 0;
+#else
+    (void)tsc_offset_;
+#endif
+}
+
+rclcpp::Time GpuCamMinimalNode::system_now_with_offset() const
+{
+    return this->now() + timestamp_offset_;
 }
 
 void GpuCamMinimalNode::tick()
@@ -233,7 +301,7 @@ void GpuCamMinimalNode::tick()
         return;
     }
 
-    rclcpp::Time timestamp = this->now();
+    rclcpp::Time timestamp = system_now_with_offset();
     cv::Mat frame_bgr;
     cv::Mat frame_rgb_cpu;
 

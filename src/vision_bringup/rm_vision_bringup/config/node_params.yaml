@@ -9,6 +9,9 @@
     image_height: 1080             # 采集高度 (px)
     camera_info_url: "package://rm_vision_bringup/config/camera_info.yaml"  # 相机标定文件
     debug: false                   # 是否发布额外的 debug 图像
+    use_v4l2_buffer_timestamps: true   # 是否使用 V4L2 缓冲区硬件时间戳
+    timestamp_offset: 0.0              # 额外时间偏移 (秒)，正值向未来平移
+    tsc_offset_ns: 0                   # Jetson TSC 偏移补偿 (纳秒)，通常保持 0
 
     # V4L2 相机控制
     brightness: 0
@@ -25,7 +28,7 @@
     auto_exposure: 1
     exposure_time_absolute: 100
 
-    # NVDEC 低延迟相关参数
+    # NVDEC 延迟相关参数
     nvdec_v4l2_buffer_count: 4            # V4L2 缓冲区数量 (>=4 更稳)
     nvdec_capture_buffer_padding: 2       # capture plane 额外缓冲数量
     nvdec_drop_late_frames: true          # 是否丢掉滞后的帧，仅保留最新帧

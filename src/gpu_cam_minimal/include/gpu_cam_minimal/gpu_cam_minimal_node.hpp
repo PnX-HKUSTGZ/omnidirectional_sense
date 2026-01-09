@@ -36,6 +36,9 @@ private:
     void apply_camera_controls();
     static int64_t timeval_to_ns(const timeval & tv);
     rclcpp::Time convert_v4l2_timestamp(const timeval & tv, bool is_monotonic);
+    int64_t getTimeOffset() const;
+    void setTSCOffset();
+    rclcpp::Time system_now_with_offset() const;
     void tick();
     void startCpuTimer();
     void startNvdecCaptureLoop();
@@ -62,6 +65,9 @@ private:
     std::string pixel_format_;
     int cuda_device_id_{0};
     bool debug_enabled_{false};
+    bool use_v4l2_buffer_timestamps_{true};
+    rclcpp::Duration timestamp_offset_{0, 0};
+    int64_t tsc_offset_{0};
     int nvdec_v4l2_buffer_count_{4};
     int nvdec_capture_buffer_padding_{2};
     bool nvdec_drop_late_frames_{true};
@@ -91,8 +97,6 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr gpu_cam_info_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-    rclcpp::Clock system_clock_{RCL_SYSTEM_TIME};
 
     cv::VideoCapture cap_;
     cv::cuda::GpuMat d_frame_rgb_;
