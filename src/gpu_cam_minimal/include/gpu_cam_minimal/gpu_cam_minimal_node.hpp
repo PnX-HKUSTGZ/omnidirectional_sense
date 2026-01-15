@@ -63,6 +63,7 @@ private:
     std::string video_device_;
     std::string publish_mode_;
     std::string pixel_format_;
+    bool flip_image_{false};
     int cuda_device_id_{0};
     bool debug_enabled_{false};
     bool use_v4l2_buffer_timestamps_{true};

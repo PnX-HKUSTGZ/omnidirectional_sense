@@ -34,6 +34,7 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     video_device_ = this->declare_parameter<std::string>("video_device", "/dev/video0");
     publish_mode_ = "gpu";    // fixed mode
     pixel_format_ = "mjpeg";  // pipeline assumes MJPEG input
+    flip_image_ = this->declare_parameter<bool>("flip", false);
     debug_enabled_ = this->declare_parameter<bool>("debug", false);
     use_v4l2_buffer_timestamps_ =
         this->declare_parameter<bool>("use_v4l2_buffer_timestamps", true);
@@ -311,6 +312,9 @@ void GpuCamMinimalNode::tick()
         return;
     }
     cv::cvtColor(frame_bgr, frame_rgb_cpu, cv::COLOR_BGR2RGB);
+    if (flip_image_) {
+        cv::flip(frame_rgb_cpu, frame_rgb_cpu, -1);  // 180-degree rotate via both-axis flip
+    }
     if (frame_rgb_cpu.empty()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Converted RGB frame is empty");
         return;
@@ -365,6 +369,9 @@ void GpuCamMinimalNode::nvdecCaptureLoop()
         rclcpp::Time timestamp;
         if (readNvdecFrame(gpu_rgb, timestamp)) {
             nvdec_failure_count_ = 0;
+            if (flip_image_) {
+                cv::cuda::flip(gpu_rgb, gpu_rgb, -1);
+            }
             publishFrame(gpu_rgb, nullptr, timestamp);
             continue;
         }
