@@ -7,6 +7,13 @@ camera_devices:
   2: "/dev/camera_back"
   3: "/dev/camera_left"
 
+# 每路相机的参数文件（相对 config/ 路径），便于为不同相机指定独立的 ros__parameters 与标定
+camera_param_files:
+  0: "cam_front_params.yaml"
+  1: "cam_right_params.yaml"
+  2: "cam_back_params.yaml"
+  3: "cam_left_params.yaml"
+
 # 四个摄像头的 TF 参数配置
 # cam0: 前方摄像头
 odom2camera_0:

@@ -6,8 +6,16 @@ sys.path.append(os.path.join(get_package_share_directory('rm_vision_bringup'), '
 
 def generate_launch_description():
 
-    from common import (launch_params, create_robot_state_publisher, serial_driver_node,
-                        video_reader_shared_params, armor_detector_shared_params, gpu_cam_shared_params)
+    from common import (
+        launch_params,
+        create_robot_state_publisher,
+        serial_driver_node,
+        video_reader_shared_params,
+        armor_detector_shared_params,
+        gpu_cam_shared_params,
+        video_reader_params_for,
+        gpu_cam_params_for,
+    )
     from launch_ros.descriptions import ComposableNode
     from launch_ros.actions import ComposableNodeContainer, Node
     from launch.actions import TimerAction
@@ -21,13 +29,14 @@ def generate_launch_description():
         3: '/dev/video6'
     })
     
-    def get_video_reader_node(package, plugin, name='video_reader_node', remappings=None, frame_id='camera_optical_frame', camera_name='camera'):
+    def get_video_reader_node(package, plugin, cam_id, name='video_reader_node', remappings=None, frame_id='camera_optical_frame', camera_name='camera'):
         # 使用共享的 video_reader 参数，并允许传入每个实例的 frame_id 与 camera_name
+        cam_params = video_reader_params_for(cam_id)
         return ComposableNode(
             package=package,
             plugin=plugin,
             name=name,
-            parameters=[video_reader_shared_params, {'frame_id': frame_id, 'camera_name': camera_name}],
+            parameters=[video_reader_shared_params, cam_params, {'frame_id': frame_id, 'camera_name': camera_name}],
             remappings=remappings or [],
             extra_arguments=[{'use_intra_process_comms': True}]
         )
@@ -41,11 +50,12 @@ def generate_launch_description():
             'frame_id': frame_id,
             'camera_name': camera_name,
         }
+        cam_params = gpu_cam_params_for(cam_id)
         return ComposableNode(
             package='gpu_cam_minimal',
             plugin='GpuCamMinimalNode',
             name=name,
-            parameters=[gpu_cam_shared_params, per_cam_params],
+            parameters=[gpu_cam_shared_params, cam_params, per_cam_params],
             remappings=remappings or [],
             extra_arguments=[{'use_intra_process_comms': True}]
         )
@@ -119,7 +129,7 @@ def generate_launch_description():
         ]
         if launch_params['video_play']:
             image_node = get_video_reader_node('video_reader', 'video_reader::VideoReaderNode',
-                                               name=node_name, remappings=image_remaps,
+                                               cam_id=i, name=node_name, remappings=image_remaps,
                                                frame_id=frame_id, camera_name=camera_name)
         else:
             image_node = get_gpu_cam_node(cam_id=i, name=cam_node_name,
