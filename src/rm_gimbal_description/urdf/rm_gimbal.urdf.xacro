@@ -7,20 +7,20 @@
   <xacro:arg name="rpy" default="0 0 0" />
   <xacro:arg name="camera_name" default="camera" />
 
-  <link name="base_link" />
+  <link name="odom_omni" />
 
-  <link name="gimbal_link" />
+  <link name="omni_gimbal_link" />
 
-  <joint name="gimbal_joint" type="floating">
-    <parent link="base_link" />
-    <child link="gimbal_link" />
+  <joint name="omni_gimbal_joint" type="floating">
+    <parent link="odom_omni" />
+    <child link="omni_gimbal_link" />
   </joint>
 
   <link name="$(arg camera_name)_link" />
 
   <joint name="$(arg camera_name)_joint" type="fixed">
     <origin xyz="$(arg xyz)" rpy="$(arg rpy)" />
-    <parent link="gimbal_link" />
+    <parent link="omni_gimbal_link" />
     <child link="$(arg camera_name)_link" />
     <axis xyz="0 0 0" />
   </joint>

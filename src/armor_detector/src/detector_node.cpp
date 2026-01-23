@@ -198,8 +198,8 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
     }
     std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, detect_color_);
 
-    // 提取from base_link to gimbal的坐标系变换
-    if (!updateTransform(img_msg->header.frame_id, "base_link", img_msg->header.stamp)) {
+    // 提取from odom_omni to omni_gimbal_link的坐标系变换
+    if (!updateTransform(img_msg->header.frame_id, "odom_omni", img_msg->header.stamp)) {
         return;
     }
 

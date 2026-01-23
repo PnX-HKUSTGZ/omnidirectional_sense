@@ -60,7 +60,7 @@ def gpu_cam_params_for(cam_id):
     return _extract(load_cam_params(cam_id), 'gpu_cam_minimal')
 
 # 为每个摄像头创建独立的 robot_state_publisher
-# 所有摄像头共享 base_link 和 gimbal_link，但各自有独立的 camera_link
+# 所有摄像头共享 odom_omni 和 omni_gimbal_link，但各自有独立的 camera_link
 def create_robot_state_publisher(cam_id):
     robot_description = Command(['xacro ', os.path.join(
         get_package_share_directory('rm_gimbal_description'), 'urdf', 'rm_gimbal.urdf.xacro'),
