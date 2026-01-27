@@ -1,5 +1,7 @@
 #include "gpu_cam_minimal/gpu_cam_minimal_node.hpp"
 
+#include "gpu_cam_minimal/cuda_flip.hpp"
+
 #include <cuda_runtime_api.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -9,6 +11,7 @@
 #include <armor_detector/gpu_image_type_adapter.hpp>
 #include <cerrno>
 #include <chrono>
+#include <exception>
 #include <ctime>
 #include <cstdlib>
 #include <cstring>
@@ -370,7 +373,12 @@ void GpuCamMinimalNode::nvdecCaptureLoop()
         if (readNvdecFrame(gpu_rgb, timestamp)) {
             nvdec_failure_count_ = 0;
             if (flip_image_) {
-                cv::cuda::flip(gpu_rgb, gpu_rgb, -1);
+                try {
+                    gpu_cam_minimal::cudaFlip(gpu_rgb, gpu_rgb, -1);
+                } catch (const std::exception & e) {
+                    handleNvdecFailure(std::string("cudaFlip failed: ") + e.what());
+                    continue;
+                }
             }
             publishFrame(gpu_rgb, nullptr, timestamp);
             continue;

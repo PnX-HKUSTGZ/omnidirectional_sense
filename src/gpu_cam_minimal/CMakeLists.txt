@@ -87,6 +87,7 @@ set(GPU_CAM_COMMON_SRC
   src/nvdec_mjpeg_decoder.cpp
   src/nvdec_mjpeg_decoder_impl.cpp
   src/yuv2rgb.cu
+  src/cuda_flip.cu
 )
 
 set(GPU_CAM_ALL_SRC ${GPU_CAM_NODE_SRC} ${GPU_CAM_COMMON_SRC} ${NV_CLASSES_SRC} ${NV_CUDA_SRC})
