@@ -15,19 +15,12 @@ def generate_launch_description():
         gpu_cam_shared_params,
         video_reader_params_for,
         gpu_cam_params_for,
+        get_gpu_cam_node,
     )
     from launch_ros.descriptions import ComposableNode
     from launch_ros.actions import ComposableNodeContainer, Node
     from launch.actions import TimerAction
     from launch import LaunchDescription
-    
-    # 从配置文件读取相机设备映射
-    camera_devices = launch_params.get('camera_devices', {
-        0: '/dev/video0',
-        1: '/dev/video2',
-        2: '/dev/video4',
-        3: '/dev/video6'
-    })
     
     def get_video_reader_node(package, plugin, cam_id, name='video_reader_node', remappings=None, frame_id='camera_optical_frame', camera_name='camera'):
         # 使用共享的 video_reader 参数，并允许传入每个实例的 frame_id 与 camera_name
@@ -40,25 +33,7 @@ def generate_launch_description():
             remappings=remappings or [],
             extra_arguments=[{'use_intra_process_comms': True}]
         )
-    
-    def get_gpu_cam_node(cam_id, name='gpu_cam_node', remappings=None,
-                         frame_id='camera_optical_frame', camera_name='camera'):
-        """创建 gpu_cam_minimal 节点"""
-        video_device = camera_devices.get(cam_id, '/dev/video0')
-        per_cam_params = {
-            'video_device': video_device,
-            'frame_id': frame_id,
-            'camera_name': camera_name,
-        }
-        cam_params = gpu_cam_params_for(cam_id)
-        return ComposableNode(
-            package='gpu_cam_minimal',
-            plugin='GpuCamMinimalNode',
-            name=name,
-            parameters=[gpu_cam_shared_params, cam_params, per_cam_params],
-            remappings=remappings or [],
-            extra_arguments=[{'use_intra_process_comms': True}]
-        )
+
 
     def get_camera_detector_container(*nodes, container_name='camera_detector_container', delay=2.0):
         node_list = list(nodes)

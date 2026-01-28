@@ -5,3 +5,4 @@ log/
 install/
 
 *.mp4
+*.cache

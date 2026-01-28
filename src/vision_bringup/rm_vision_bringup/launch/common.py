@@ -4,6 +4,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch.substitutions import Command
 from launch_ros.actions import Node
+from launch_ros.descriptions import ComposableNode
 
 launch_params = yaml.safe_load(open(os.path.join(
     get_package_share_directory('rm_vision_bringup'), 'config', 'launch_params.yaml')))
@@ -84,3 +85,30 @@ serial_driver_node = Node(
     parameters=[node_params],
     ros_arguments=['--ros-args', '-p', 'has_rune:=true' if launch_params['rune'] else 'has_rune:=false'],
 )
+    
+# 从配置文件读取相机设备映射
+camera_devices = launch_params.get('camera_devices', {
+    0: '/dev/video0',
+    1: '/dev/video2',
+    2: '/dev/video4',
+    3: '/dev/video6'
+})
+
+def get_gpu_cam_node(cam_id, name='gpu_cam_node', remappings=None,
+                        frame_id='camera_optical_frame', camera_name='camera'):
+    """创建 gpu_cam_minimal 节点"""
+    video_device = camera_devices.get(cam_id, '/dev/video0')
+    per_cam_params = {
+        'video_device': video_device,
+        'frame_id': frame_id,
+        'camera_name': camera_name,
+    }
+    cam_params = gpu_cam_params_for(cam_id)
+    return ComposableNode(
+        package='gpu_cam_minimal',
+        plugin='GpuCamMinimalNode',
+        name=name,
+        parameters=[gpu_cam_shared_params, cam_params, per_cam_params],
+        remappings=remappings or [],
+        extra_arguments=[{'use_intra_process_comms': True}]
+    )

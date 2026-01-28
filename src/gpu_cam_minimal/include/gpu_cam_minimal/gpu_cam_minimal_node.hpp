@@ -63,6 +63,7 @@ private:
     std::string video_device_;
     std::string publish_mode_;
     std::string pixel_format_;
+    std::string egl_platform_;
     bool flip_image_{false};
     int cuda_device_id_{0};
     bool debug_enabled_{false};

@@ -37,6 +37,7 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     video_device_ = this->declare_parameter<std::string>("video_device", "/dev/video0");
     publish_mode_ = "gpu";    // fixed mode
     pixel_format_ = "mjpeg";  // pipeline assumes MJPEG input
+    egl_platform_ = this->declare_parameter<std::string>("egl_platform", "surfaceless");
     flip_image_ = this->declare_parameter<bool>("flip", false);
     debug_enabled_ = this->declare_parameter<bool>("debug", false);
     use_v4l2_buffer_timestamps_ =
@@ -112,6 +113,13 @@ void GpuCamMinimalNode::initializeCudaDevice()
 
 void GpuCamMinimalNode::openCamera()
 {
+    if (!egl_platform_.empty()) {
+        setenv("EGL_PLATFORM", egl_platform_.c_str(), 1);
+        RCLCPP_INFO(
+            get_logger(), "EGL_PLATFORM set to '%s' for NVDEC headless compatibility",
+            egl_platform_.c_str());
+    }
+
     // Try to use Jetson NVDEC path for MJPEG -> NV12 -> RGB on GPU
     use_hw_mjpeg_ = (publish_mode_ == "gpu" || publish_mode_ == "gpu_hw") &&
                     (pixel_format_ == "mjpeg" || pixel_format_ == "MJPG") &&

@@ -12,7 +12,7 @@
     use_v4l2_buffer_timestamps: true
     timestamp_offset: 0.0
     tsc_offset_ns: 0
-    brightness: 0
+    brightness: 50
     contrast: 32
     saturation: 64
     hue: 0
@@ -28,4 +28,5 @@
     nvdec_v4l2_buffer_count: 4
     nvdec_capture_buffer_padding: 2
     nvdec_drop_late_frames: true
+    egl_platform: "surfaceless"
     flip: true
