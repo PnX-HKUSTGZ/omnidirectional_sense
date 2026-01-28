@@ -129,6 +129,9 @@ def generate_launch_description():
             '--size', '7x7',
             '--square', '0.03',
             '--pattern', 'circles'
+        ],
+        remappings=[
+            ('image', '/image_raw'),
         ]
     )
     
@@ -141,4 +144,5 @@ def generate_launch_description():
         v4l2_camera_node,
         hik_camera_node,
         gpu_cam_container,
+        calibration_node,
     ])
