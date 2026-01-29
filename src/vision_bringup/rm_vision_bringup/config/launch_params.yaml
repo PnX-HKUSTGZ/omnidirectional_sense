@@ -45,4 +45,4 @@ video_play: false
 # true: 开启打符 false：关闭打符 非必要保持常开
 rune: true
 # true: 单计算机测试模式 false: 多计算机协同工作
-unit_test: false
+unit_test: true

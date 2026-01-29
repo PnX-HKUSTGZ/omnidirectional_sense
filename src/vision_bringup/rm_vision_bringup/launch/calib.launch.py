@@ -46,7 +46,7 @@ def generate_launch_description():
 
     camera_name_arg = DeclareLaunchArgument(
         'camera_name',
-        default_value='camera_0',
+        default_value='camera_2',
         description='相机名称，需与 camera_info 中的 camera_name 一致',
     )
 
@@ -100,11 +100,11 @@ def generate_launch_description():
     )
 
     gpu_cam_composable = get_gpu_cam_node(
-        cam_id=0,
-        name='gpu_cam_node_0',
+        cam_id=2,
+        name='gpu_cam_node_2',
         remappings=[('/image_gpu', '/image_raw'), ('/camera_info', '/camera_info')],
-        frame_id='camera_0_optical_frame',
-        camera_name='camera_0',
+        frame_id='camera_2_optical_frame',
+        camera_name='camera_2',
     )
 
     gpu_cam_container = ComposableNodeContainer(

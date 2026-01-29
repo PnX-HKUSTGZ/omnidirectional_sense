@@ -90,6 +90,8 @@ private:
         int backlight_compensation{0};
         int auto_exposure{V4L2_EXPOSURE_APERTURE_PRIORITY};
         int exposure_time_absolute{313};
+        bool focus_automatic_continuous{true};
+        int focus_absolute{68};
     } control_params_;
     // Publishers
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;

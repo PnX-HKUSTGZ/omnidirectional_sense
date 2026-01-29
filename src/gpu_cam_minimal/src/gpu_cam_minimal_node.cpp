@@ -65,6 +65,9 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     control_params_.auto_exposure = this->declare_parameter<int>("auto_exposure", 3);
     control_params_.exposure_time_absolute =
         this->declare_parameter<int>("exposure_time_absolute", 313);
+    control_params_.focus_automatic_continuous =
+        this->declare_parameter<bool>("focus_automatic_continuous", true);
+    control_params_.focus_absolute = this->declare_parameter<int>("focus_absolute", 68);
     cuda_device_id_ = this->declare_parameter<int>("cuda_device_id", 0);
 
     setTSCOffset();
@@ -216,6 +219,10 @@ void GpuCamMinimalNode::apply_camera_controls()
             "exposure_time_absolute", V4L2_CID_EXPOSURE_ABSOLUTE,
             control_params_.exposure_time_absolute);
     }
+    set_ctrl(
+        "focus_automatic_continuous", V4L2_CID_FOCUS_AUTO,
+        control_params_.focus_automatic_continuous ? 1 : 0);
+    set_ctrl("focus_absolute", V4L2_CID_FOCUS_ABSOLUTE, control_params_.focus_absolute);
 
     ::close(fd);
 }
