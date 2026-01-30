@@ -389,7 +389,10 @@ void GpuCamMinimalNode::nvdecCaptureLoop()
             nvdec_failure_count_ = 0;
             if (flip_image_) {
                 try {
-                    gpu_cam_minimal::cudaFlip(gpu_rgb, gpu_rgb, -1);
+                    // Flip on a dedicated stream and wait to ensure downstream readers see flipped data
+                    cv::cuda::Stream flip_stream;
+                    gpu_cam_minimal::cudaFlip(gpu_rgb, gpu_rgb, -1, flip_stream);
+                    flip_stream.waitForCompletion();
                 } catch (const std::exception & e) {
                     handleNvdecFailure(std::string("cudaFlip failed: ") + e.what());
                     continue;
