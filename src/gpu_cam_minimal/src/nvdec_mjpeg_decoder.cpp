@@ -145,7 +145,7 @@ bool NvdecMjpegDecoder::open(const std::string & video_device, int width, int he
     }
 
     // ---- 创建 Jetson NVDEC MJPEG 解码器 ----
-    impl_->dec = NvVideoDecoder::createVideoDecoder("dec0");
+    impl_->dec.reset(NvVideoDecoder::createVideoDecoder("dec0"));
     if (!impl_->dec) {
         close_decoder();
         return false;
@@ -255,63 +255,7 @@ bool NvdecMjpegDecoder::read_rgb(
 
 void NvdecMjpegDecoder::close_decoder()
 {
-    if (!impl_->opened) {
-        return;
-    }
-
-    if (impl_->dec) {
-        impl_->dec->abort();
-
-        impl_->dec->capture_plane.setStreamStatus(false);
-        impl_->dec->capture_plane.deinitPlane();
-
-        impl_->dec->output_plane.setStreamStatus(false);
-        impl_->stop_output_reclaim_thread();
-        impl_->dec->output_plane.deinitPlane();
-
-        delete impl_->dec;
-        impl_->dec = nullptr;
-    }
-
-    for (int fd : impl_->capture_dmabuf_fds) {
-        if (fd >= 0) {
-            NvBufSurf::NvDestroy(fd);
-        }
-    }
-    impl_->capture_dmabuf_fds.clear();
-    impl_->capture_configured = false;
-    impl_->capture_num_buffers = 0;
-    impl_->capture_num_planes = 0;
-    impl_->capture_pixfmt = 0;
-    impl_->dec_w = 0;
-    impl_->dec_h = 0;
-    impl_->frames_fed = 0;
-    impl_->out_in_use[0] = impl_->out_in_use[1] = false;
-
-    if (impl_->egl_display != EGL_NO_DISPLAY) {
-        eglTerminate(impl_->egl_display);
-        impl_->egl_display = EGL_NO_DISPLAY;
-    }
-
-    if (impl_->v4l2_streaming && impl_->v4l2_fd >= 0) {
-        v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        (void)v4l2_ioctl(impl_->v4l2_fd, VIDIOC_STREAMOFF, &type);
-        impl_->v4l2_streaming = false;
-    }
-
-    for (auto & buf : impl_->v4l2_bufs) {
-        if (buf.start && buf.length) {
-            munmap(buf.start, buf.length);
-        }
-    }
-    impl_->v4l2_bufs.clear();
-
-    if (impl_->v4l2_fd >= 0) {
-        ::close(impl_->v4l2_fd);
-        impl_->v4l2_fd = -1;
-    }
-
-    impl_->opened = false;
+    impl_->reset();
 }
 
 bool NvdecMjpegDecoder::is_open() const { return impl_->opened; }

@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <opencv2/core/cuda.hpp>
 #include <string>
@@ -28,7 +29,14 @@ class NvdecMjpegDecoderImpl
 {
 public:
     NvdecMjpegDecoderImpl() = default;
-    ~NvdecMjpegDecoderImpl() = default;
+    ~NvdecMjpegDecoderImpl();
+
+    void reset();
+
+    struct NvDecoderDeleter
+    {
+        void operator()(NvVideoDecoder * ptr) const { delete ptr; }
+    };
 
     struct CaptureResult
     {
@@ -67,7 +75,7 @@ public:
         size_t length{0};
     };
     std::vector<V4L2Buffer> v4l2_bufs;
-    NvVideoDecoder * dec{nullptr};
+    std::unique_ptr<NvVideoDecoder, NvDecoderDeleter> dec;
     EGLDisplay egl_display{EGL_NO_DISPLAY};
     std::vector<unsigned char> enc_buf;
     bool capture_configured{false};

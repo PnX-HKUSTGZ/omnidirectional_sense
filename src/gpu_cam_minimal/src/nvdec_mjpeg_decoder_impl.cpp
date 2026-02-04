@@ -42,6 +42,72 @@
 namespace gpu_cam_minimal
 {
 
+NvdecMjpegDecoderImpl::~NvdecMjpegDecoderImpl()
+{
+    reset();
+}
+
+void NvdecMjpegDecoderImpl::reset()
+{
+    stop_output_reclaim_thread();
+
+    if (capture_future_valid_) {
+        capture_future_.wait();
+        capture_future_valid_ = false;
+    }
+
+    if (dec) {
+        dec->abort();
+        dec->capture_plane.setStreamStatus(false);
+        dec->capture_plane.deinitPlane();
+
+        dec->output_plane.setStreamStatus(false);
+        dec->output_plane.deinitPlane();
+
+        dec.reset();
+    }
+
+    for (int fd : capture_dmabuf_fds) {
+        if (fd >= 0) {
+            NvBufSurf::NvDestroy(fd);
+        }
+    }
+    capture_dmabuf_fds.clear();
+    capture_configured = false;
+    capture_num_buffers = 0;
+    capture_num_planes = 0;
+    capture_pixfmt = 0;
+    dec_w = 0;
+    dec_h = 0;
+    frames_fed = 0;
+    out_in_use[0] = out_in_use[1] = false;
+
+    if (egl_display != EGL_NO_DISPLAY) {
+        eglTerminate(egl_display);
+        egl_display = EGL_NO_DISPLAY;
+    }
+
+    if (v4l2_streaming && v4l2_fd >= 0) {
+        v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        (void)v4l2_ioctl(v4l2_fd, VIDIOC_STREAMOFF, &type);
+        v4l2_streaming = false;
+    }
+
+    for (auto & buf : v4l2_bufs) {
+        if (buf.start && buf.length) {
+            munmap(buf.start, buf.length);
+        }
+    }
+    v4l2_bufs.clear();
+
+    if (v4l2_fd >= 0) {
+        ::close(v4l2_fd);
+        v4l2_fd = -1;
+    }
+
+    opened = false;
+}
+
 namespace
 {
 
