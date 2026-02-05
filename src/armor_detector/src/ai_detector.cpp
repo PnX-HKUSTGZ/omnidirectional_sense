@@ -54,6 +54,24 @@ inline size_t getElementSize(nvinfer1::DataType t)
     }
 }
 
+inline const char * trtTypeName(nvinfer1::DataType t)
+{
+    switch (t) {
+        case nvinfer1::DataType::kFLOAT:
+            return "FP32";
+        case nvinfer1::DataType::kHALF:
+            return "FP16";
+        case nvinfer1::DataType::kINT32:
+            return "INT32";
+        case nvinfer1::DataType::kINT8:
+            return "INT8";
+        case nvinfer1::DataType::kBOOL:
+            return "BOOL";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 template <typename T>
 inline size_t computeSize(const nvinfer1::Dims & d)
 {
@@ -177,13 +195,13 @@ AIDetector::AIDetector(
         car_input_data_type_ = car_engine_->getTensorDataType(car_input_tensor_name_.c_str());
         car_output_data_type_ = car_engine_->getTensorDataType(car_output_tensor_name_.c_str());
 
-        // car 模型同样约定：输入 FP16，输出 FP32
+        // car 模型约定：输入 FP16；输出允许 FP16 或 FP32（不同构建/精度模式可能不同）
         if (car_input_data_type_ != nvinfer1::DataType::kHALF ||
-            car_output_data_type_ != nvinfer1::DataType::kFLOAT) {
+            (car_output_data_type_ != nvinfer1::DataType::kFLOAT &&
+             car_output_data_type_ != nvinfer1::DataType::kHALF)) {
             throw std::runtime_error(
-                "car.engine expects FP16 input and FP32 output. Got input=" +
-                std::to_string(static_cast<int>(car_input_data_type_)) +
-                " output=" + std::to_string(static_cast<int>(car_output_data_type_)));
+                std::string("car.engine expects FP16 input and FP16/FP32 output. Got input=") +
+                trtTypeName(car_input_data_type_) + " output=" + trtTypeName(car_output_data_type_));
         }
 
         const int fallback[4] = {1, 3, IMAGE_HEIGHT, IMAGE_WIDTH};
@@ -207,7 +225,11 @@ AIDetector::AIDetector(
                 car_output_size_ * getElementSize(car_output_data_type_)),
             "cudaMalloc car output");
 
+        // Host output buffer: keep a float view for downstream parsing.
         car_host_output_.resize(car_output_size_);
+        if (car_output_data_type_ == nvinfer1::DataType::kHALF) {
+            car_host_output_fp16_.resize(car_output_size_);
+        }
 
         std::cout << "[AIDetector] Car engine loaded: " << car_engine_path_.string() << std::endl;
     }
@@ -370,12 +392,26 @@ void AIDetector::infer(const cv::cuda::GpuMat & gpu_rgb8, int detect_color)
     if (!car_context_->enqueueV3(stream_)) throw std::runtime_error("car TensorRT enqueue failed");
 
     // Copy car output to host
-    checkCuda(
-        cudaMemcpyAsync(
-            car_host_output_.data(), car_output_device_buffer_,
-            car_output_size_ * sizeof(float), cudaMemcpyDeviceToHost, stream_),
-        "Memcpy car output D2H");
-    cudaStreamSynchronize(stream_);
+    if (car_output_data_type_ == nvinfer1::DataType::kFLOAT) {
+        checkCuda(
+            cudaMemcpyAsync(
+                car_host_output_.data(), car_output_device_buffer_,
+                car_output_size_ * sizeof(float), cudaMemcpyDeviceToHost, stream_),
+            "Memcpy car output D2H");
+        cudaStreamSynchronize(stream_);
+    } else if (car_output_data_type_ == nvinfer1::DataType::kHALF) {
+        checkCuda(
+            cudaMemcpyAsync(
+                car_host_output_fp16_.data(), car_output_device_buffer_,
+                car_output_size_ * sizeof(__half), cudaMemcpyDeviceToHost, stream_),
+            "Memcpy car output D2H");
+        cudaStreamSynchronize(stream_);
+        for (size_t i = 0; i < car_output_size_; ++i) {
+            car_host_output_[i] = __half2float(car_host_output_fp16_[i]);
+        }
+    } else {
+        throw std::runtime_error("Unsupported car.engine output dtype");
+    }
 
     // Parse YOLOv5 export output: [cx,cy,w,h,obj,cls...]
     int kAttrCar = 0;

@@ -11,6 +11,7 @@
 
 // CUDA
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 // TensorRT
 #include <NvInfer.h>
@@ -144,6 +145,7 @@ private:
     void * car_input_device_buffer_{nullptr};                           ///< car 输入缓冲区 (GPU)
     void * car_output_device_buffer_{nullptr};                          ///< car 输出缓冲区 (GPU)
     std::vector<float> car_host_output_;                                ///< car 输出主机缓冲 (FP32)
+    std::vector<__half> car_host_output_fp16_;                           ///< car 输出主机缓冲 (FP16)
     // GPU 后处理缓冲
     void * device_post_dets_{nullptr};                                  ///< 设备端候选输出数组
     int  * device_post_count_{nullptr};                                 ///< 设备端候选数量计数器
