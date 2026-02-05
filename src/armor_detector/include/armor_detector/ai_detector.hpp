@@ -18,6 +18,7 @@
 
 // STD
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -124,14 +125,25 @@ private:
 
     // TensorRT 相关
     Logger logger_;                                                    ///< TensorRT Logger
+    // 装甲板模型（0526.engine）：保持原有成员语义
     std::unique_ptr<nvinfer1::IRuntime> runtime_;                     ///< TensorRT Runtime
     std::unique_ptr<nvinfer1::ICudaEngine> engine_;                   ///< TensorRT Engine
     std::unique_ptr<nvinfer1::IExecutionContext> context_;            ///< TensorRT Execution Context
+
+    // 车辆模型（car.engine）：用于先验 ROI 裁剪
+    std::unique_ptr<nvinfer1::IRuntime> car_runtime_;
+    std::unique_ptr<nvinfer1::ICudaEngine> car_engine_;
+    std::unique_ptr<nvinfer1::IExecutionContext> car_context_;
     
     // CUDA 相关
     cudaStream_t stream_;                                              ///< CUDA Stream
     void * input_device_buffer_{nullptr};                              ///< 输入缓冲区 (GPU)
     void * output_device_buffer_{nullptr};                             ///< 输出缓冲区 (GPU)
+
+    // car.engine buffers
+    void * car_input_device_buffer_{nullptr};                           ///< car 输入缓冲区 (GPU)
+    void * car_output_device_buffer_{nullptr};                          ///< car 输出缓冲区 (GPU)
+    std::vector<float> car_host_output_;                                ///< car 输出主机缓冲 (FP32)
     // GPU 后处理缓冲
     void * device_post_dets_{nullptr};                                  ///< 设备端候选输出数组
     int  * device_post_count_{nullptr};                                 ///< 设备端候选数量计数器
@@ -152,11 +164,24 @@ private:
     nvinfer1::Dims output_dims_{};                                     ///< 模型输出原始维度
     size_t input_size_{0};                                             ///< 输入大小 (float 数量)
     size_t output_size_{0};                                            ///< 输出大小 (float 数量)
+
+    // car I/O info
+    std::string car_input_tensor_name_;
+    std::string car_output_tensor_name_;
+    nvinfer1::DataType car_input_data_type_{nvinfer1::DataType::kFLOAT};
+    nvinfer1::DataType car_output_data_type_{nvinfer1::DataType::kFLOAT};
+    nvinfer1::Dims car_input_dims_{};
+    nvinfer1::Dims car_output_dims_{};
+    size_t car_input_size_{0};
+    size_t car_output_size_{0};
     
     // 参数
     float conf_threshold_;            ///< 置信度阈值
     float nms_threshold_;             ///< NMS 阈值
     std::vector<size_t> input_shape;  ///< 输入形状
+
+    std::filesystem::path armor_engine_path_;
+    std::filesystem::path car_engine_path_;
 
     // 原始图像尺寸 (用于坐标缩放)
     int original_width_;   ///< 原始图像宽度
