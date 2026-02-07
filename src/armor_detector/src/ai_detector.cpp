@@ -14,6 +14,7 @@
 #include <opencv2/cudaimgproc.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/core/cuda_stream_accessor.hpp>
+#include <opencv2/dnn/dnn.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
 
@@ -500,9 +501,22 @@ void AIDetector::infer(const cv::cuda::GpuMat & gpu_rgb8, int detect_color)
     else if (detect_color == 1)
         detect_color = 0;
 
-    for (int ki : car_keep) {
-        const cv::Rect & car_box = car_boxes[ki];
-        cv::Rect roi_rect = makeSquareRoi(car_box, orig_w, orig_h);
+    // 如果没有识别到任何车辆，则对整幅图像直接进行装甲板检测
+    std::vector<cv::Rect> armor_rois;
+    if (car_keep.empty()) {
+        armor_rois.emplace_back(0, 0, orig_w, orig_h);
+    } else {
+        armor_rois.reserve(car_keep.size());
+        for (int ki : car_keep) {
+            if (ki < 0 || ki >= static_cast<int>(car_boxes.size())) continue;
+            const cv::Rect & car_box = car_boxes[ki];
+            cv::Rect roi_rect = makeSquareRoi(car_box, orig_w, orig_h);
+            if (roi_rect.area() <= 0) continue;
+            armor_rois.push_back(roi_rect);
+        }
+    }
+
+    for (const auto & roi_rect : armor_rois) {
         if (roi_rect.area() <= 0) continue;
 
         cv::cuda::GpuMat roi_gpu(gpu_rgb8, roi_rect);
