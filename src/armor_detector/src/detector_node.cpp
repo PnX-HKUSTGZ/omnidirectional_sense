@@ -23,6 +23,7 @@
 
 // STD
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -190,13 +191,22 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
         return;
     }
 
+    const rclcpp::Time cb_start = this->now();
+    const double msg_latency_ms = (cb_start - img_msg->header.stamp).seconds() * 1000.0;
+
     // 直接使用 GPU 帧进行 AI 检测
     if (!img_msg->gpu || img_msg->gpu->empty()) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 2000, "Empty GpuImage received");
         return;
     }
+
+    const auto infer_start = std::chrono::steady_clock::now();
     std::vector<Armor> armors = ai_detector_->detect(*img_msg->gpu, detect_color_);
+    const auto infer_end = std::chrono::steady_clock::now();
+    const double infer_latency_ms =
+        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(infer_end - infer_start)
+            .count();
 
     // 提取from odom_omni to omni_gimbal_link的坐标系变换
     if (!updateTransform(img_msg->header.frame_id, "odom_omni", img_msg->header.stamp)) {
@@ -297,7 +307,7 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
             img_msg->gpu->download(cpu_img);
         }
         if (!cpu_img.empty()) {
-            drawResults(img_msg->header, cpu_img, armors);
+            drawResults(img_msg->header, cpu_img, armors, msg_latency_ms, infer_latency_ms);
         }
 
         // Publishing marker
@@ -417,12 +427,9 @@ void ArmorDetectorNode::chooseBestPose(Armor & armor, const cv::Mat & rvec, cons
 
 // ==================== 可视化和调试功能 ====================
 void ArmorDetectorNode::drawResults(
-    const std_msgs::msg::Header & header, cv::Mat & img, const std::vector<Armor> & armors)
+    const std_msgs::msg::Header & header, cv::Mat & img, const std::vector<Armor> & armors,
+    double msg_latency_ms, double infer_latency_ms)
 {
-    //计算延迟
-    auto final_time = this->now();
-    auto latency = (final_time - header.stamp).seconds() * 1000;
-    RCLCPP_DEBUG_STREAM(this->get_logger(), "Latency: " << latency << "ms");
     if (!debug_) {
         return;
     }
@@ -454,12 +461,22 @@ void ArmorDetectorNode::drawResults(
     }
     // Draw camera center
     cv::circle(img, cam_center_, 5, cv::Scalar(255, 0, 0), 2);
-    // Draw latency
-    std::stringstream latency_ss;
-    latency_ss << "Latency: " << std::fixed << std::setprecision(2) << latency << "ms";
-    auto latency_s = latency_ss.str();
-    cv::putText(
-        img, latency_s, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
+
+    // Draw latency (split)
+    {
+        std::stringstream ss1;
+        ss1 << "Msg latency: " << std::fixed << std::setprecision(2) << msg_latency_ms << " ms";
+        cv::putText(
+            img, ss1.str(), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1.0,
+            cv::Scalar(0, 255, 0), 2);
+
+        std::stringstream ss2;
+        ss2 << "Infer latency: " << std::fixed << std::setprecision(2) << infer_latency_ms
+            << " ms";
+        cv::putText(
+            img, ss2.str(), cv::Point(10, 65), cv::FONT_HERSHEY_SIMPLEX, 1.0,
+            cv::Scalar(0, 255, 0), 2);
+    }
     result_img_pub_.publish(cv_bridge::CvImage(header, "rgb8", img).toImageMsg());
 }
 

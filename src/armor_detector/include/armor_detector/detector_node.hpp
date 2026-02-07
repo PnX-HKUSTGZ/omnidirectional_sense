@@ -88,7 +88,8 @@ private:
      * @param armors 检测到的装甲板列表
      */
     void drawResults(
-        const std_msgs::msg::Header & header, cv::Mat & img, const std::vector<Armor> & armors);
+        const std_msgs::msg::Header & header, cv::Mat & img, const std::vector<Armor> & armors,
+        double msg_latency_ms, double infer_latency_ms);
 
     /**
      * @brief 创建用于调试的发布器
