@@ -16,13 +16,45 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <memory>
 #include <opencv2/cudaimgproc.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
+
+struct GpuCamMinimalNode::GpuBufferPool : public std::enable_shared_from_this<GpuBufferPool>
+{
+    struct Slot
+    {
+        cv::cuda::GpuMat mat;
+        std::atomic<bool> in_use{false};
+    };
+
+    explicit GpuBufferPool(size_t size) : slots(size) {}
+
+    std::shared_ptr<cv::cuda::GpuMat> acquire()
+    {
+        for (size_t i = 0; i < slots.size(); ++i) {
+            bool expected = false;
+            if (!slots[i].in_use.compare_exchange_strong(expected, true)) {
+                continue;
+            }
+
+            return std::shared_ptr<cv::cuda::GpuMat>(
+                &slots[i].mat,
+                [pool = this->shared_from_this(), i](cv::cuda::GpuMat * /*unused*/) {
+                    pool->slots[i].in_use.store(false, std::memory_order_release);
+                });
+        }
+        return {};
+    }
+
+    std::vector<Slot> slots;
+};
 
 GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
 : Node("gpu_cam_minimal", options)
@@ -45,6 +77,7 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     double timestamp_offset_sec = this->declare_parameter<double>("timestamp_offset", 0.0);
     timestamp_offset_ = rclcpp::Duration::from_seconds(timestamp_offset_sec);
     tsc_offset_ = this->declare_parameter<int64_t>("tsc_offset_ns", 0);
+    gpu_buffer_pool_size_ = this->declare_parameter<int>("gpu_buffer_pool_size", 8);
     nvdec_v4l2_buffer_count_ = this->declare_parameter<int>("nvdec_v4l2_buffer_count", 4);
     nvdec_capture_buffer_padding_ = this->declare_parameter<int>("nvdec_capture_buffer_padding", 2);
     nvdec_drop_late_frames_ = this->declare_parameter<bool>("nvdec_drop_late_frames", true);
@@ -73,6 +106,9 @@ GpuCamMinimalNode::GpuCamMinimalNode(const rclcpp::NodeOptions & options)
     setTSCOffset();
 
     initializeCudaDevice();
+
+    gpu_buffer_pool_size_ = std::max(1, gpu_buffer_pool_size_);
+    gpu_buffer_pool_ = std::make_shared<GpuBufferPool>(static_cast<size_t>(gpu_buffer_pool_size_));
 
     // Publishers to match usb_cam external topics
     image_pub_ =
@@ -337,14 +373,17 @@ void GpuCamMinimalNode::tick()
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Converted RGB frame is empty");
         return;
     }
-    if (d_frame_rgb_.empty() || d_frame_rgb_.rows != frame_rgb_cpu.rows ||
-        d_frame_rgb_.cols != frame_rgb_cpu.cols || d_frame_rgb_.type() != frame_rgb_cpu.type()) {
-        d_frame_rgb_.release();
-        d_frame_rgb_ = cv::cuda::GpuMat(frame_rgb_cpu.size(), frame_rgb_cpu.type());
+    // Publish as GPU buffer handle to avoid in-flight frame overwrite.
+    auto gpu_buf = acquireGpuBuffer();
+    if (!gpu_buf) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "GPU buffer pool exhausted (size=%d); dropping frame", gpu_buffer_pool_size_);
+        return;
     }
-    d_frame_rgb_.upload(frame_rgb_cpu);
-
-    publishFrame(d_frame_rgb_, &frame_rgb_cpu, timestamp);
+    gpu_buf->create(frame_rgb_cpu.rows, frame_rgb_cpu.cols, frame_rgb_cpu.type());
+    gpu_buf->upload(frame_rgb_cpu);
+    publishFrameShared(gpu_buf, &frame_rgb_cpu, timestamp);
 }
 
 void GpuCamMinimalNode::startCpuTimer()
@@ -378,27 +417,35 @@ void GpuCamMinimalNode::stopNvdecCaptureLoop()
 
 void GpuCamMinimalNode::nvdecCaptureLoop()
 {
-    cv::cuda::GpuMat gpu_rgb;
     while (rclcpp::ok() && !nvdec_thread_stop_.load()) {
         if (!use_hw_mjpeg_ || !nvdec_) {
             break;
         }
 
         rclcpp::Time timestamp;
-        if (readNvdecFrame(gpu_rgb, timestamp)) {
+        auto gpu_buf = acquireGpuBuffer();
+        if (!gpu_buf) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 2000,
+                "GPU buffer pool exhausted (size=%d); dropping frame", gpu_buffer_pool_size_);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        if (readNvdecFrame(*gpu_buf, timestamp)) {
             nvdec_failure_count_ = 0;
             if (flip_image_) {
                 try {
                     // Flip on a dedicated stream and wait to ensure downstream readers see flipped data
                     cv::cuda::Stream flip_stream;
-                    gpu_cam_minimal::cudaFlip(gpu_rgb, gpu_rgb, -1, flip_stream);
+                    gpu_cam_minimal::cudaFlip(*gpu_buf, *gpu_buf, -1, flip_stream);
                     flip_stream.waitForCompletion();
                 } catch (const std::exception & e) {
                     handleNvdecFailure(std::string("cudaFlip failed: ") + e.what());
                     continue;
                 }
             }
-            publishFrame(gpu_rgb, nullptr, timestamp);
+            publishFrameShared(gpu_buf, nullptr, timestamp);
             continue;
         }
 
@@ -414,6 +461,14 @@ void GpuCamMinimalNode::nvdecCaptureLoop()
         }
     }
     nvdec_thread_running_.store(false);
+}
+
+std::shared_ptr<cv::cuda::GpuMat> GpuCamMinimalNode::acquireGpuBuffer()
+{
+    if (!gpu_buffer_pool_) {
+        return {};
+    }
+    return gpu_buffer_pool_->acquire();
 }
 
 bool GpuCamMinimalNode::readNvdecFrame(cv::cuda::GpuMat & gpu_rgb, rclcpp::Time & timestamp)
@@ -459,6 +514,8 @@ void GpuCamMinimalNode::publishFrame(
         gpu_msg.width = static_cast<uint32_t>(gpu_rgb.cols);
         gpu_msg.height = static_cast<uint32_t>(gpu_rgb.rows);
         gpu_msg.step = static_cast<uint32_t>(gpu_rgb.step);
+        // NOTE: This path is safe only if gpu_rgb memory is not reused until subscribers finish.
+        // Prefer publishFrameShared() when using a reuse-capable capture pipeline.
         gpu_msg.gpu = std::make_shared<cv::cuda::GpuMat>(gpu_rgb);
         gpu_image_pub_->publish(gpu_msg);
         if (gpu_cam_info_pub_) {
@@ -498,6 +555,44 @@ void GpuCamMinimalNode::publishFrame(
     const auto publish_time = this->now();
     updateDebugStats(timestamp, publish_time);
     publishDebugImage(ci, gpu_rgb, cpu_rgb);
+}
+
+void GpuCamMinimalNode::publishFrameShared(
+    const std::shared_ptr<cv::cuda::GpuMat> & gpu_rgb, const cv::Mat * cpu_rgb,
+    const rclcpp::Time & timestamp)
+{
+    if (!gpu_rgb || gpu_rgb->empty()) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "GPU RGB frame is empty");
+        return;
+    }
+
+    auto ci = cinfo_mgr_->getCameraInfo();
+    ci.header.stamp = timestamp;
+    ci.header.frame_id = frame_id_;
+
+    const bool gpu_publish =
+        (publish_mode_ == "gpu" || publish_mode_ == "gpu_hw") && gpu_image_pub_;
+
+    if (gpu_publish) {
+        armor_detector::GpuImage gpu_msg;
+        gpu_msg.header = ci.header;
+        gpu_msg.encoding = "rgb8";
+        gpu_msg.width = static_cast<uint32_t>(gpu_rgb->cols);
+        gpu_msg.height = static_cast<uint32_t>(gpu_rgb->rows);
+        gpu_msg.step = static_cast<uint32_t>(gpu_rgb->step);
+        gpu_msg.gpu = gpu_rgb;
+        gpu_image_pub_->publish(gpu_msg);
+        if (gpu_cam_info_pub_) {
+            gpu_cam_info_pub_->publish(ci);
+        }
+    } else {
+        publishFrame(*gpu_rgb, cpu_rgb, timestamp);
+        return;
+    }
+
+    const auto publish_time = this->now();
+    updateDebugStats(timestamp, publish_time);
+    publishDebugImage(ci, *gpu_rgb, cpu_rgb);
 }
 
 void GpuCamMinimalNode::publishDebugImage(

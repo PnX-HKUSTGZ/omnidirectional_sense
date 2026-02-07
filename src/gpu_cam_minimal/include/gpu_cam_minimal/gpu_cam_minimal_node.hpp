@@ -28,6 +28,8 @@ public:
     ~GpuCamMinimalNode() override;
 
 private:
+    struct GpuBufferPool;
+
     bool openCpuCapture();
     void handleNvdecFailure(const std::string & reason);
     void fallbackToCpuCapture(const std::string & reason);
@@ -45,8 +47,12 @@ private:
     void stopNvdecCaptureLoop();
     void nvdecCaptureLoop();
     bool readNvdecFrame(cv::cuda::GpuMat & gpu_rgb, rclcpp::Time & timestamp);
+    std::shared_ptr<cv::cuda::GpuMat> acquireGpuBuffer();
     void publishFrame(
         const cv::cuda::GpuMat & gpu_rgb, const cv::Mat * cpu_rgb, const rclcpp::Time & timestamp);
+    void publishFrameShared(
+        const std::shared_ptr<cv::cuda::GpuMat> & gpu_rgb, const cv::Mat * cpu_rgb,
+        const rclcpp::Time & timestamp);
     void publishDebugImage(
         const sensor_msgs::msg::CameraInfo & info, const cv::cuda::GpuMat & gpu_rgb,
         const cv::Mat * cpu_rgb);
@@ -70,6 +76,7 @@ private:
     bool use_v4l2_buffer_timestamps_{true};
     rclcpp::Duration timestamp_offset_{0, 0};
     int64_t tsc_offset_{0};
+    int gpu_buffer_pool_size_{8};
     int nvdec_v4l2_buffer_count_{4};
     int nvdec_capture_buffer_padding_{2};
     bool nvdec_drop_late_frames_{true};
@@ -105,6 +112,8 @@ private:
     cv::VideoCapture cap_;
     cv::cuda::GpuMat d_frame_rgb_;
     std::unique_ptr<camera_info_manager::CameraInfoManager> cinfo_mgr_;
+
+    std::shared_ptr<GpuBufferPool> gpu_buffer_pool_;
 
     bool use_hw_mjpeg_{false};
 

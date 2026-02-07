@@ -32,3 +32,4 @@
     nvdec_drop_late_frames: true
     egl_platform: "surfaceless"
     flip: false
+    gpu_buffer_pool_size: 8
