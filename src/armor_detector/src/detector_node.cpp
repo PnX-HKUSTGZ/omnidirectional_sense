@@ -25,8 +25,10 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -435,6 +437,18 @@ void ArmorDetectorNode::drawResults(
     }
     // 只使用 AI 检测器
     ai_detector_->drawResults(img);
+
+    // Draw car detections (from car.engine)
+    {
+        const auto & car_boxes = ai_detector_->getLastCarBoxes();
+        for (const auto & r : car_boxes) {
+            if (r.area() <= 0) continue;
+            cv::rectangle(img, r, cv::Scalar(0, 255, 0), 2);
+            cv::putText(
+                img, "car", cv::Point(r.x, std::max(0, r.y - 5)), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+                cv::Scalar(0, 255, 0), 2);
+        }
+    }
     // Show yaw, pitch, roll
     for (const auto & armor : armors) {
         Eigen::Vector3d rpy = armor.r_odom_armor.eulerAngles(0, 1, 2);  //提取欧拉角

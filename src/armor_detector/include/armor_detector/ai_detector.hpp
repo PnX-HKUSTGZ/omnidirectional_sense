@@ -73,6 +73,9 @@ public:
      */
     void drawResults(cv::Mat & img);
 
+    /// 获取上一帧 car.engine 的 NMS 后车辆框（坐标已映射回原图尺寸）
+    const std::vector<cv::Rect> & getLastCarBoxes() const { return last_car_boxes_; }
+
     /**
      * @brief 获取检测器类型名称
      * 
@@ -195,6 +198,8 @@ private:
     std::vector<Object> objects_;      ///< 原始检测对象
     std::vector<Object> tmp_objects_;  ///< NMS 后的检测对象
     std::vector<Armor> armors_;        ///< 本帧装甲板结果
+
+    std::vector<cv::Rect> last_car_boxes_;  ///< 本帧车辆检测框（car.engine）
     
 };
 

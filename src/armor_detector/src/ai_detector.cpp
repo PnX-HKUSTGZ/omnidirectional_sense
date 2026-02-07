@@ -351,6 +351,7 @@ void AIDetector::infer(const cv::cuda::GpuMat & gpu_rgb8, int detect_color)
     // 清理结果
     objects_.clear();
     tmp_objects_.clear();
+    last_car_boxes_.clear();
 
     const auto logger = rclcpp::get_logger("AIDetector");
 
@@ -478,6 +479,14 @@ void AIDetector::infer(const cv::cuda::GpuMat & gpu_rgb8, int detect_color)
     std::vector<int> car_keep;
     if (!car_boxes.empty()) {
         cv::dnn::NMSBoxes(car_boxes, car_scores, conf_threshold_, nms_threshold_, car_keep);
+    }
+
+    // 保存 car.engine 的检测框，供外部可视化（已是原图坐标）
+    last_car_boxes_.reserve(car_keep.size());
+    for (int ki : car_keep) {
+        if (ki >= 0 && ki < static_cast<int>(car_boxes.size())) {
+            last_car_boxes_.push_back(car_boxes[ki]);
+        }
     }
 
     // ============ Stage 2: 0526.engine (armor) on each square ROI ============
