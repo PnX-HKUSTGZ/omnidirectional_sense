@@ -501,19 +501,16 @@ void AIDetector::infer(const cv::cuda::GpuMat & gpu_rgb8, int detect_color)
     else if (detect_color == 1)
         detect_color = 0;
 
-    // 如果没有识别到任何车辆，则对整幅图像直接进行装甲板检测
+    // 始终对整幅图像做一次装甲板检测，再追加车辆 ROI 的双层检测结果，由后续 NMS 融合。
     std::vector<cv::Rect> armor_rois;
-    if (car_keep.empty()) {
-        armor_rois.emplace_back(0, 0, orig_w, orig_h);
-    } else {
-        armor_rois.reserve(car_keep.size());
-        for (int ki : car_keep) {
-            if (ki < 0 || ki >= static_cast<int>(car_boxes.size())) continue;
-            const cv::Rect & car_box = car_boxes[ki];
-            cv::Rect roi_rect = makeSquareRoi(car_box, orig_w, orig_h);
-            if (roi_rect.area() <= 0) continue;
-            armor_rois.push_back(roi_rect);
-        }
+    armor_rois.reserve(car_keep.size() + 1);
+    armor_rois.emplace_back(0, 0, orig_w, orig_h);
+    for (int ki : car_keep) {
+        if (ki < 0 || ki >= static_cast<int>(car_boxes.size())) continue;
+        const cv::Rect & car_box = car_boxes[ki];
+        cv::Rect roi_rect = makeSquareRoi(car_box, orig_w, orig_h);
+        if (roi_rect.area() <= 0) continue;
+        armor_rois.push_back(roi_rect);
     }
 
     for (const auto & roi_rect : armor_rois) {
