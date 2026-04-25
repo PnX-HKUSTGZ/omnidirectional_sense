@@ -75,7 +75,8 @@ def generate_launch_description():
     cam_detectors = []
     robot_state_publishers = []  # 添加列表来存储所有的 robot_state_publisher
     
-    for i in range(4):
+    camera_ids = sorted(int(cam_id) for cam_id in launch_params.get('camera_devices', {}).keys())
+    for index, i in enumerate(camera_ids):
         node_name = f"video_reader_node_{i}"
         cam_node_name = f"gpu_cam_node_{i}"
         det_name = f"armor_detector_{i}"
@@ -112,8 +113,8 @@ def generate_launch_description():
                                           camera_name=camera_name)
         armor_detector_node = make_armor_detector_node(name=det_name, remappings=detector_remaps)
         container_name = f"camera_detector_container_{i}"
-        # 每个容器之间间隔1秒启动: 第0个在2秒启动,第1个在3秒,第2个在4秒,第3个在5秒
-        container_delay = 2.0 + i * 1.0
+        # 每个容器之间间隔1秒启动。
+        container_delay = 2.0 + index * 1.0
         cam_detector = get_camera_detector_container(image_node, armor_detector_node, container_name=container_name, delay=container_delay)
         
         # 为每个摄像头创建对应的 robot_state_publisher，在对应容器启动前0.5秒启动

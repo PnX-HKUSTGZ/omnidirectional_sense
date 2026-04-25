@@ -2,38 +2,31 @@ camera: hik
 
 # 相机设备映射 (USB相机的 /dev/video 设备路径)
 camera_devices:
-  0: "/dev/camera_front"
-  1: "/dev/camera_right"
-  2: "/dev/camera_back"
-  3: "/dev/camera_left"
+  0: "/dev/camera_right"
+  1: "/dev/camera_mid"
+  2: "/dev/camera_left"
 
 # 每路相机的参数文件（相对 config/ 路径），便于为不同相机指定独立的 ros__parameters 与标定
 camera_param_files:
-  0: "cam_front_params.yaml"
-  1: "cam_right_params.yaml"
-  2: "cam_back_params.yaml"
-  3: "cam_left_params.yaml"
+  0: "cam_right_params.yaml"
+  1: "cam_front_params.yaml"
+  2: "cam_left_params.yaml"
 
-# 四个摄像头的 TF 参数配置
-# cam0: 前方摄像头
+# 三个摄像头的 TF 参数配置
+# cam0: 左前摄像头
 odom2camera_0:
-  xyz: "\"0.065 0.0  0.15\""
-  rpy: "\"0.0 -0.0  0.0\""  
+  xyz: "\"0.065 0.1126  -0.16\""
+  rpy: "\"0.0 -0.0  1.0472\""
 
-# cam1: 右侧摄像头
+# cam1: 右前摄像头
 odom2camera_1:
-  xyz: "\"0.0 -0.065  0.15\""
-  rpy: "\"0.0 -0.0  -1.5708\""
+  xyz: "\"0.065 -0.1126  -0.16\""
+  rpy: "\"0.0 -0.0  -1.0472\""
 
 # cam2: 后方摄像头
 odom2camera_2:
-  xyz: "\"-0.16 -0.0  0.15\""
+  xyz: "\"-0.18 0.0  -0.16\""
   rpy: "\"0.0 -0.0  3.1416\""
-
-# cam3: 左侧摄像头
-odom2camera_3:
-  xyz: "\"-0.0 0.065  0.15\""
-  rpy: "\"0.0 -0.0  1.5708\""
 
 detector_log_level: INFO
 tracker_log_level: INFO
