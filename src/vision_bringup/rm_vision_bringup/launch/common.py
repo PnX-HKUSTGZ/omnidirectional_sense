@@ -91,13 +91,13 @@ camera_devices = launch_params.get('camera_devices', {
     0: '/dev/video0',
     1: '/dev/video2',
     2: '/dev/video4',
-    3: '/dev/video6'
 })
 
 def get_gpu_cam_node(cam_id, name='gpu_cam_node', remappings=None,
                         frame_id='camera_optical_frame', camera_name='camera'):
     """创建 gpu_cam_minimal 节点"""
-    video_device = camera_devices.get(cam_id, '/dev/video0')
+    key = cam_id if cam_id in camera_devices else str(cam_id)
+    video_device = camera_devices.get(key, '/dev/video0')
     per_cam_params = {
         'video_device': video_device,
         'frame_id': frame_id,

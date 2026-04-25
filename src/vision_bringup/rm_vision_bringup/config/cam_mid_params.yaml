@@ -1,24 +1,24 @@
 /video_reader_node:
   ros__parameters:
-    camera_info_url: package://rm_vision_bringup/config/camera_info_cam_back.yaml
+    camera_info_url: package://rm_vision_bringup/config/camera_info_cam_mid.yaml
 
 /gpu_cam_minimal:
   ros__parameters:
     framerate: 30.0
     image_width: 1920
     image_height: 1080
-    camera_info_url: "package://rm_vision_bringup/config/camera_info_cam_back.yaml"
+    camera_info_url: "package://rm_vision_bringup/config/camera_info_cam_mid.yaml"
     debug: false
     use_v4l2_buffer_timestamps: true
     timestamp_offset: 0.0
     tsc_offset_ns: 0
-    brightness: 70
+    brightness: -50
     contrast: 32
     saturation: 64
     hue: 0
     white_balance_automatic: true
     gamma: 300
-    gain: 50
+    gain: 32
     power_line_frequency: 1
     white_balance_temperature: 4600
     sharpness: 32
@@ -31,5 +31,5 @@
     nvdec_capture_buffer_padding: 2
     nvdec_drop_late_frames: true
     egl_platform: "surfaceless"
-    flip: true
+    flip: false
     gpu_buffer_pool_size: 8

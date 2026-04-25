@@ -39,20 +39,20 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             FindPackageShare('rm_vision_bringup'),
             'config',
-            'cam_front_params.yaml',
+            'cam_mid_params.yaml',
         ]),
         description='gpu_cam_minimal 模式使用的参数文件, 示例见 cam_*_params.yaml',
     )
 
     camera_name_arg = DeclareLaunchArgument(
         'camera_name',
-        default_value='camera_2',
+        default_value='camera_1',
         description='相机名称，需与 camera_info 中的 camera_name 一致',
     )
 
     video_device_arg = DeclareLaunchArgument(
         'video_device',
-        default_value='/dev/video0',
+        default_value='/dev/camera_mid',
         description='V4L2 设备路径，gpu_cam_minimal/v4l2 模式都会用到',
     )
     
@@ -100,11 +100,11 @@ def generate_launch_description():
     )
 
     gpu_cam_composable = get_gpu_cam_node(
-        cam_id=2,
-        name='gpu_cam_node_2',
+        cam_id=1,
+        name='gpu_cam_node_1',
         remappings=[('/image_gpu', '/image_raw'), ('/camera_info', '/camera_info')],
-        frame_id='camera_2_optical_frame',
-        camera_name='camera_2',
+        frame_id='camera_1_optical_frame',
+        camera_name='camera_1',
     )
 
     gpu_cam_container = ComposableNodeContainer(
