@@ -1,13 +1,13 @@
 /video_reader_node:
   ros__parameters:
-    camera_info_url: package://rm_vision_bringup/config/camera_info_cam_mid.yaml
+    camera_info_url: package://rm_vision_bringup/config/camera_info_cam_back.yaml
 
 /gpu_cam_minimal:
   ros__parameters:
     framerate: 30.0
     image_width: 1920
     image_height: 1080
-    camera_info_url: "package://rm_vision_bringup/config/camera_info_cam_mid.yaml"
+    camera_info_url: "package://rm_vision_bringup/config/camera_info_cam_back.yaml"
     debug: false
     use_v4l2_buffer_timestamps: true
     timestamp_offset: 0.0

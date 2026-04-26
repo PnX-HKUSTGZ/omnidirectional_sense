@@ -39,7 +39,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             FindPackageShare('rm_vision_bringup'),
             'config',
-            'cam_mid_params.yaml',
+            'cam_back_params.yaml',
         ]),
         description='gpu_cam_minimal 模式使用的参数文件, 示例见 cam_*_params.yaml',
     )
