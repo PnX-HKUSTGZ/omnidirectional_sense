@@ -24,6 +24,8 @@
 
 // STD
 #include <Eigen/Core>
+#include <chrono>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -60,6 +62,11 @@ private:
      * @param img_msg 输入的图像消息
      */
     void imageCallback(armor_detector::GpuImage::UniquePtr img_msg);
+
+    /**
+     * @brief 统计并以 0.5Hz 输出 detector 实际收到的图像帧率
+     */
+    void updateFrameRateLog();
 
     // -------------------- 坐标变换和位姿处理 --------------------
     /**
@@ -137,6 +144,9 @@ private:
     // -------------------- 调试相关 --------------------
     bool debug_;
     image_transport::Publisher result_img_pub_;
+    std::chrono::steady_clock::time_point fps_window_start_;
+    std::size_t fps_window_frames_{0};
+    bool fps_window_initialized_{false};
     
     /**
     * @brief 装甲板可视化标记

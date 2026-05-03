@@ -193,6 +193,8 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
         return;
     }
 
+    updateFrameRateLog();
+
     const rclcpp::Time cb_start = this->now();
     const double msg_latency_ms = (cb_start - img_msg->header.stamp).seconds() * 1000.0;
 
@@ -317,6 +319,31 @@ void ArmorDetectorNode::imageCallback(armor_detector::GpuImage::UniquePtr img_ms
     }
 }
 
+void ArmorDetectorNode::updateFrameRateLog()
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (!fps_window_initialized_) {
+        fps_window_start_ = now;
+        fps_window_initialized_ = true;
+    }
+
+    ++fps_window_frames_;
+
+    const auto elapsed = now - fps_window_start_;
+    const double elapsed_sec = std::chrono::duration<double>(elapsed).count();
+    if (elapsed_sec < 2.0) {
+        return;
+    }
+
+    const double fps = static_cast<double>(fps_window_frames_) / elapsed_sec;
+    RCLCPP_INFO(
+        this->get_logger(), "Detector FPS: %.2f (%zu frames / %.2f s)", fps, fps_window_frames_,
+        elapsed_sec);
+
+    fps_window_start_ = now;
+    fps_window_frames_ = 0;
+}
+
 // ==================== 坐标变换和位姿处理 ====================
 bool ArmorDetectorNode::updateTransform(
     std::string target_frame, std::string source_frame, rclcpp::Time timestamp)
@@ -359,18 +386,21 @@ bool ArmorDetectorNode::updateTransform(
             odom_to_camera_tf.transform.translation.z);
         return 1;
     } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN(
-            this->get_logger(), "TF lookup failed: [%s] -> [%s] at time %.6f. Error: %s",
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "TF lookup failed: [%s] -> [%s] at time %.6f. Error: %s",
             source_frame.c_str(), target_frame.c_str(), timestamp.seconds(), ex.what());
         return 0;
     } catch (const std::exception & ex) {
-        RCLCPP_WARN(
-            this->get_logger(), "Exception in lookupTransform [%s] -> [%s]: %s",
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Exception in lookupTransform [%s] -> [%s]: %s",
             source_frame.c_str(), target_frame.c_str(), ex.what());
         return 0;
     } catch (...) {
-        RCLCPP_WARN(
-            this->get_logger(), "Unknown error in lookupTransform: [%s] -> [%s] at time %.6f",
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Unknown error in lookupTransform: [%s] -> [%s] at time %.6f",
             source_frame.c_str(), target_frame.c_str(), timestamp.seconds());
         return 0;
     }
