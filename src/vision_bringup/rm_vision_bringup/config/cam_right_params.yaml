@@ -12,16 +12,16 @@
     use_v4l2_buffer_timestamps: true
     timestamp_offset: 0.0
     tsc_offset_ns: 0
-    brightness: -50
+    brightness: -64
     contrast: 32
-    saturation: 64
+    saturation: 128
     hue: 0
-    white_balance_automatic: true
-    gamma: 300
+    white_balance_automatic: false
+    gamma: 100
     gain: 32
     power_line_frequency: 1
     white_balance_temperature: 4600
-    sharpness: 32
+    sharpness: 1
     backlight_compensation: 0
     auto_exposure: 1
     exposure_time_absolute: 100
